@@ -3,14 +3,28 @@ import uuid
 import structlog
 from datetime import datetime
 from typing import Dict, Any
-
+import json
+from pathlib import Path
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
 from app.agents.planner import PlannerAgent
 from app.agents.executor import ExecutorAgent
 from app.agents.critic import CriticAgent, Verdict
-
+import time
 logger = structlog.get_logger()
+
+def classify_failure(error: str | None) -> str | None:
+    if not error:
+        return None
+    e = error.lower()
+    if "no such file" in e:
+        return "FILE_NOT_FOUND"
+    if "syntaxerror" in e:
+        return "SYNTAX_ERROR"
+    if "command not found" in e:
+        return "COMMAND_NOT_FOUND"
+    return "UNKNOWN"
+
 
 async def execute_task(task_id: str):
     """
@@ -26,6 +40,15 @@ async def execute_task(task_id: str):
     
     This is what makes the system autonomous.
     """
+    task_metrics = {
+        "task_id": task_id,
+        "started_at": time.time(),
+        "total_steps": 0,
+        "completed_steps": 0,
+        "retries": 0,
+        "failures": [],
+        "step_traces": [],
+    }
     logger.info("orchestrator_started", task_id=task_id)
     
     # Initialize agents
@@ -71,7 +94,7 @@ async def execute_task(task_id: str):
             db.commit()
             
             logger.info("orchestrator_plan_created", num_steps=len(plan))
-            
+            task_metrics["total_steps"] = len(plan)
             # PHASE 2: EXECUTION
             context: Dict[str, Any] = {}
             
@@ -95,7 +118,7 @@ async def execute_task(task_id: str):
                 retry_count = 0
                 step_succeeded = False
                 
-                while retry_count <= max_retries and not step_succeeded:
+                while retry_count < max_retries and not step_succeeded:
                     step.status = StepStatus.RUNNING
                     step.retry_count = retry_count
                     db.commit()
@@ -131,9 +154,21 @@ async def execute_task(task_id: str):
                             verdict=evaluation.verdict,
                             reason=evaluation.reason
                         )
+                        task_metrics["step_traces"].append({
+                            "step_number": step_number,
+                            "attempt": retry_count,
+                            "instruction": step.instruction,
+                            "tool_success": tool_result.success,
+                            "error": tool_result.error,
+                            "verdict": evaluation.verdict.value,
+                            "reason": evaluation.reason,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+
                         
                         # Handle verdict
                         if evaluation.verdict == Verdict.PASS:
+                            task_metrics["completed_steps"] += 1
                             step.status = StepStatus.COMPLETED
                             step.completed_at = datetime.utcnow()
                             step_succeeded = True
@@ -142,9 +177,9 @@ async def execute_task(task_id: str):
                             context[f"step_{step_number}_output"] = tool_result.output
                         
                         elif evaluation.verdict == Verdict.RETRY:
+                            task_metrics["retries"] += 1
                             step.status = StepStatus.RETRYING
                             retry_count += 1
-                            
                             logger.warning(
                                 "orchestrator_step_retrying",
                                 step_number=step_number,
@@ -170,9 +205,14 @@ async def execute_task(task_id: str):
                             task.error_message = f"Step {step_number} failed: {evaluation.reason}"
                             task.completed_at = datetime.utcnow()
                             db.commit()
+                            task_metrics["failures"].append({
+                                "step_number": step_number,
+                                "error": step.error,
+                                "category": classify_failure(step.error),
+                            })
+
+                            finalize_and_export(task_metrics)
                             return
-                        
-                        db.commit()
                     
                     except Exception as e:
                         logger.error(
@@ -190,6 +230,12 @@ async def execute_task(task_id: str):
                         task.error_message = f"Step {step_number} crashed: {str(e)}"
                         task.completed_at = datetime.utcnow()
                         db.commit()
+                        task_metrics["failures"].append({
+                            "step_number": None,
+                            "error": str(e),
+                            "category": "ORCHESTRATOR_ERROR",
+                        })
+                        finalize_and_export(task_metrics)
                         return
                 
                 # If step didn't succeed after retries
@@ -198,19 +244,28 @@ async def execute_task(task_id: str):
                         "orchestrator_step_exhausted_retries",
                         step_number=step_number
                     )
-                    
+
                     step.status = StepStatus.FAILED
                     task.status = TaskStatus.FAILED
                     task.error_message = f"Step {step_number} exhausted retries"
                     task.completed_at = datetime.utcnow()
                     db.commit()
+
+                    task_metrics["failures"].append({
+                        "step_number": step_number,
+                        "error": "Exhausted retries",
+                        "category": "RETRY_LIMIT_EXCEEDED",
+                    })
+
+                    finalize_and_export(task_metrics)
                     return
+
             
             # PHASE 3: COMPLETION
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.utcnow()
             db.commit()
-            
+            finalize_and_export(task_metrics)
             logger.info("orchestrator_completed", task_id=task_id)
     
     except Exception as e:
@@ -223,3 +278,15 @@ async def execute_task(task_id: str):
                 task.error_message = f"Orchestrator error: {str(e)}"
                 task.completed_at = datetime.utcnow()
                 db.commit()
+                
+def export_task_trace(metrics: dict):
+    Path("traces").mkdir(exist_ok=True)
+    path = f"traces/task_{metrics['task_id']}.json"
+    with open(path, "w") as f:
+        json.dump(metrics, f, indent=2)
+        
+def finalize_and_export(task_metrics: dict):
+    task_metrics["duration_sec"] = round(
+        time.time() - task_metrics["started_at"], 2
+    )
+    export_task_trace(task_metrics)
