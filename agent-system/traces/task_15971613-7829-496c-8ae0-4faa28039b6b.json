@@ -1,0 +1,18 @@
+{
+  "task_id": "15971613-7829-496c-8ae0-4faa28039b6b",
+  "started_at": 1768642722.4460547,
+  "total_steps": 0,
+  "completed_steps": 0,
+  "retries": 0,
+  "failures": [
+    {
+      "step_number": null,
+      "error": "Anthropic LLM call failed: Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': 'This request would exceed the rate limit for your organization (5d57de3c-aed9-452f-9c76-21b9dc95890a) of 5 requests per minute. For details, refer to: https://docs.claude.com/en/api/rate-limits. You can see the response headers for current usage. Please reduce the prompt length or the maximum tokens requested, or try again later. You may also contact sales at https://www.anthropic.com/contact-sales to discuss your options for a rate limit increase.'}, 'request_id': 'req_011CXCjAjJkebFbQD2prrQKh'}",
+      "category": "PLANNING_ERROR"
+    }
+  ],
+  "step_traces": [],
+  "memories_used": [],
+  "created_files": [],
+  "duration_sec": 37.4
+}

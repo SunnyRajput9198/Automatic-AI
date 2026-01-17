@@ -15,7 +15,7 @@ class PythonExecutor(Tool):
     SECURITY:
     - Runs in isolated subprocess
     - Timeout protection
-    - Working directory isolation
+    - Working directory set to shared workspace for file persistence
     """
     
     @property
@@ -24,7 +24,7 @@ class PythonExecutor(Tool):
     
     @property
     def description(self) -> str:
-        return "Execute Python code in a sandbox. Use for data processing, calculations, file reading, etc."
+        return "Execute Python code in a sandbox. Files created will persist in shared workspace. Use for data processing, calculations, file operations, etc."
     
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -52,12 +52,17 @@ class PythonExecutor(Tool):
         
         logger.info("python_executor_running", code_length=len(code))
         
-        # Create sandbox directory
+        # CRITICAL FIX: Use shared workspace as working directory
+        # This ensures files created by Python code persist and are accessible by file_read
+        shared_workspace = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared")
+        os.makedirs(shared_workspace, exist_ok=True)
+        
+        # Sandbox directory for temporary script files only
         sandbox_dir = os.getenv("SANDBOX_DIR", "/app/sandbox")
         os.makedirs(sandbox_dir, exist_ok=True)
         
         try:
-            # Write code to temporary file
+            # Write code to temporary file in sandbox
             with tempfile.NamedTemporaryFile(
                 mode='w',
                 suffix='.py',
@@ -67,16 +72,17 @@ class PythonExecutor(Tool):
                 f.write(code)
                 temp_file = f.name
             
-            # Execute with timeout
+            # CRITICAL FIX: Execute with cwd=shared_workspace
+            # This makes all file operations (open, write, read) work in the persistent workspace
             result = subprocess.run(
                 ["python", temp_file],
                 capture_output=True,
                 text=True,
                 timeout=30,  # 30 second timeout
-                cwd=sandbox_dir
+                cwd=shared_workspace  # ← THIS IS THE KEY FIX
             )
             
-            # Clean up
+            # Clean up temporary script file
             os.unlink(temp_file)
             
             if result.returncode == 0:
@@ -84,7 +90,7 @@ class PythonExecutor(Tool):
                 return ToolResult(
                     success=True,
                     output=result.stdout,
-                    metadata={"return_code": 0}
+                    metadata={"return_code": 0, "working_dir": shared_workspace}
                 )
             else:
                 logger.warning("python_executor_failed", error=result.stderr)
@@ -97,6 +103,11 @@ class PythonExecutor(Tool):
         
         except subprocess.TimeoutExpired:
             logger.error("python_executor_timeout")
+            # Clean up on timeout
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
             return ToolResult(
                 success=False,
                 output="",

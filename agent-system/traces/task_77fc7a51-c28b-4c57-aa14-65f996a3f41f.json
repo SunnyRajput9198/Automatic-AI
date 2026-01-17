@@ -1,0 +1,20 @@
+{
+  "task_id": "77fc7a51-c28b-4c57-aa14-65f996a3f41f",
+  "started_at": 1768643445.5258334,
+  "total_steps": 0,
+  "completed_steps": 0,
+  "retries": 0,
+  "failures": [
+    {
+      "step_number": null,
+      "error": "Anthropic LLM call failed: Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: gemini-1.5-pro'}, 'request_id': 'req_011CXCk3ax8cLHCN4552QYGF'}",
+      "category": "PLANNING_ERROR"
+    }
+  ],
+  "step_traces": [],
+  "memories_used": [
+    "de6df335-fc4d-4afa-932a-8dc607999e26"
+  ],
+  "created_files": [],
+  "duration_sec": 4.24
+}

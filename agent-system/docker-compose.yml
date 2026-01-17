@@ -36,6 +36,8 @@ services:
       DATABASE_URL: postgresql://agent:agent_password@postgres:5432/agent_system
       REDIS_URL: redis://redis:6379
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      WORKSPACE_DIR: /app/workspace
+      SANDBOX_DIR: /app/sandbox
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,8 +45,10 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
-      - ./sandbox:/app/sandbox
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+      - ./workspace:/app/workspace      # Week 2: Persistent file storage
+      - ./sandbox:/app/sandbox           # Week 1: Temporary execution
+      - ./traces:/app/traces             # Your enhancement: Task traces
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
   postgres_data:

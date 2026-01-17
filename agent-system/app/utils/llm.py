@@ -1,7 +1,7 @@
 import os
 import asyncio
 import structlog
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 
 from anthropic import Anthropic
@@ -72,6 +72,9 @@ _client = Anthropic(
 def _convert_messages(messages: List[Dict[str, str]]):
     """
     Convert OpenAI-style messages to Anthropic messages
+    
+    Returns:
+        (system_prompt, anthropic_messages)
     """
     converted = []
     system_prompt = None
@@ -101,13 +104,23 @@ def _sync_claude_call(
     """
     system_prompt, anthropic_messages = _convert_messages(messages)
 
-    response = _client.messages.create(
-        model=model,
-        system=system_prompt,
-        messages=anthropic_messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    # CRITICAL FIX: Handle None system prompt properly
+    # If no system prompt, just don't include it in the API call
+    if system_prompt is not None:
+        response = _client.messages.create(
+            model=model,
+            system=system_prompt,
+            messages=anthropic_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    else:
+        response = _client.messages.create(
+            model=model,
+            messages=anthropic_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
     return response.content[0].text
 
@@ -120,13 +133,14 @@ async def call_llm(
     messages: List[Dict[str, str]],
     model: str = DEFAULT_MODEL,
     temperature: float = 0.1,
-    max_tokens: int = 2000,
+    max_tokens: int = 4000,
 ) -> str:
     """
     Anthropic Claude LLM call with:
     - async compatibility
     - rate limiting
     - structured logging
+    - proper system prompt handling
     """
 
     await rate_limiter.wait_if_needed()

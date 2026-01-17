@@ -15,3 +15,4 @@ langchain
 anthropic
 langchain-google-genai
 google-genai
+bs4

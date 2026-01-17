@@ -85,8 +85,10 @@ class ShellExecutor(Tool):
                 capture_output=True,
                 text=True,
                 timeout=30,
-                cwd=sandbox_dir
-            )
+                shared_workspace = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared"),
+                # os.makedirs(shared_workspace, exist_ok=True)
+                cwd=shared_workspace  # Isolate in shared workspace
+                )
             
             if result.returncode == 0:
                 logger.info("shell_executor_success", output_length=len(result.stdout))
