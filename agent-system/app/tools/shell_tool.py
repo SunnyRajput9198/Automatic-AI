@@ -63,7 +63,7 @@ class ShellExecutor(Tool):
                 output="",
                 error="No command provided"
             )
-        
+         
         # Security check
         if not self._is_command_safe(command):
             base_cmd = command.split()[0] if command.split() else ""
