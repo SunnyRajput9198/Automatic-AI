@@ -1,0 +1,13 @@
+TOP 3 SORTING ALGORITHMS
+
+1. Which Sorting Algorithm is Best and Why? - GeeksforGeeks
+   Snippet: Sorting is one of the most fundamental operations in computer science. Choosing the best sorting algorithm depends on data characteristics, performance requirements, and constraints like memory usage or stability.
+   URL: https://www.geeksforgeeks.org/dsa/gfact-which-sorting-algorithm-is-best-and-why/
+
+2. 10 Best Sorting Algorithms Explained - SitePoint
+   Snippet: Learn the basics of sorting algorithms in this handy guide for anyone interested in programming, data analysis, or computer science.
+   URL: https://www.sitepoint.com/best-sorting-algorithms/
+
+3. Sorting Algorithms: Slowest to Fastest - Built In
+   Snippet: The fastest sorting algorithm is Quicksort or Merge sort, while one of the slowest sorting algorithms is Bubble sort. Here's a review of all common sorting algorithms and their performance analysis, ranked from slowest to fastest.
+   URL: https://builtin.com/machine-learning/fastest-sorting-algorithm

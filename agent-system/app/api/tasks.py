@@ -7,7 +7,7 @@ import structlog
 
 from app.db.session import get_db
 from app.models.task import Task, Step, TaskStatus
-from app.orchestrator.loop import execute_task
+from app.orchestrator.loop_v3 import execute_task_v3 as execute_task
 
 logger = structlog.get_logger()
 router = APIRouter()
