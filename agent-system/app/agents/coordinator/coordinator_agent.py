@@ -1,7 +1,7 @@
 import structlog
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
-
+import asyncio
 from app.agents.base_agent import BaseAgent, AgentResult, BaseAgent
 from app.agents.coordinator.task_router import TaskRouter
 
@@ -63,114 +63,149 @@ class CoordinatorAgent:
         task: str,
         context: Optional[Dict[str, Any]] = None
     ) -> CoordinationResult:
-        """
-        Coordinate specialist agents to complete the task.
-        
-        Args:
-            task: Task description
-            context: Optional context from orchestrator
-            
-        Returns:
-            CoordinationResult with aggregated output
-        """
+
         logger.info("coordinator_starting", task=task)
-        
         context = context or {}
-        
-        # STEP 1: Route task to agents
+
+        # STEP 1: Route task
         routing = self.router.route(task)
-        
+
         logger.info(
             "coordinator_routed",
             agents=routing.agents_needed,
             mode=routing.execution_mode,
             confidence=routing.confidence
         )
-        
-        # STEP 2: Execute agents (sequential for Day 1)
+
         agent_results = []
         execution_context = context.copy()
-        
-        for agent_role in routing.agents_needed:
-            # Check if agent is available
-            if agent_role not in self.available_agents:
-                logger.error(
-                    "coordinator_agent_missing",
-                    role=agent_role,
-                    available=list(self.available_agents.keys())
-                )
-                
-                # Create failure result
+
+        # ==================================================
+        # 🔥 DAY 3: PARALLEL EXECUTION
+        # ==================================================
+        if routing.execution_mode == "parallel":
+
+            logger.info("coordinator_parallel_execution")
+
+            coroutines = []
+            roles = []
+
+            for agent_role in routing.agents_needed:
+                agent = self.available_agents.get(agent_role)
+                if agent:
+                    coroutines.append(agent.execute(task, execution_context))
+                    roles.append(agent_role)
+
+            results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+            for role, result in zip(roles, results):
+
+                if isinstance(result, Exception):
+                    agent_results.append({
+                        "agent": role,
+                        "role": role,
+                        "success": False,
+                        "output": "",
+                        "error": str(result)
+                    })
+                    continue
+
                 agent_results.append({
-                    "agent": agent_role,
-                    "success": False,
-                    "output": "",
-                    "error": f"Agent '{agent_role}' not available"
-                })
-                continue
-            
-            # Get agent
-            agent = self.available_agents[agent_role]
-            
-            logger.info("coordinator_executing_agent", agent=agent_role)
-            
-            # Execute agent
-            try:
-                result = await agent.execute(task, execution_context)
-                
-                # Record result
-                agent_results.append({
-                    "agent": agent.name,
-                    "role": agent.role,
+                    "agent": result.agent_name,
+                    "role": role,
                     "success": result.success,
                     "output": result.output,
                     "confidence": result.confidence,
                     "metadata": result.metadata,
                     "errors": result.errors
                 })
-                
-                # Update context for next agent (sequential passing)
-                execution_context[f"{agent_role}_output"] = result.output
-                execution_context[f"{agent_role}_success"] = result.success
-                
-                logger.info(
-                    "coordinator_agent_completed",
-                    agent=agent_role,
-                    success=result.success,
-                    confidence=result.confidence
-                )
-                
-            except Exception as e:
-                logger.error(
-                    "coordinator_agent_error",
-                    agent=agent_role,
-                    error=str(e)
-                )
-                
-                agent_results.append({
-                    "agent": agent_role,
-                    "success": False,
-                    "output": "",
-                    "error": str(e)
-                })
-        
-        # STEP 3: Aggregate results
+
+                if result.success:
+                    execution_context[f"{role}_output"] = result.output
+                    execution_context[f"{role}_success"] = True
+
+        # ==================================================
+        # 🧭 SEQUENTIAL EXECUTION (Day 1–2 behavior)
+        # ==================================================
+        else:
+
+            for agent_role in routing.agents_needed:
+
+                if agent_role not in self.available_agents:
+                    logger.error(
+                        "coordinator_agent_missing",
+                        role=agent_role
+                    )
+                    agent_results.append({
+                        "agent": agent_role,
+                        "role": agent_role,
+                        "success": False,
+                        "output": "",
+                        "error": "Agent not available"
+                    })
+                    continue
+
+                agent = self.available_agents[agent_role]
+
+                logger.info("coordinator_executing_agent", agent=agent_role)
+
+                try:
+                    result = await agent.execute(task, execution_context)
+
+                    agent_results.append({
+                        "agent": agent.name,
+                        "role": agent.role,
+                        "success": result.success,
+                        "output": result.output,
+                        "confidence": result.confidence,
+                        "metadata": result.metadata,
+                        "errors": result.errors
+                    })
+
+                    execution_context[f"{agent_role}_output"] = result.output
+                    execution_context[f"{agent_role}_success"] = result.success
+
+                    logger.info(
+                        "coordinator_agent_completed",
+                        agent=agent_role,
+                        success=result.success,
+                        confidence=result.confidence
+                    )
+
+                except Exception as e:
+                    logger.error(
+                        "coordinator_agent_error",
+                        agent=agent_role,
+                        error=str(e)
+                    )
+
+                    agent_results.append({
+                        "agent": agent_role,
+                        "role": agent_role,
+                        "success": False,
+                        "output": "",
+                        "error": str(e)
+                    })
+
+        # ==================================================
+        # STEP 3: Aggregate
+        # ==================================================
         coordination_result = self._aggregate_results(
             task=task,
             agent_results=agent_results,
             execution_mode=routing.execution_mode,
             routing_reasoning=routing.reasoning
         )
-        
+
         logger.info(
             "coordinator_completed",
             success=coordination_result.success,
             agents_used=coordination_result.total_agents,
             successful=coordination_result.successful_agents
         )
-        
+
         return coordination_result
-    
+
     def _aggregate_results(
         self,
         task: str,
