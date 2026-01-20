@@ -5,7 +5,8 @@ from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 
 from anthropic import Anthropic
-
+from dotenv import load_dotenv
+load_dotenv()
 logger = structlog.get_logger()
 
 # -------------------------------

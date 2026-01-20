@@ -5,7 +5,8 @@ from typing import Dict, Any, Optional
 
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.utils.llm import call_llm
-
+from dotenv import load_dotenv
+load_dotenv()
 logger = structlog.get_logger()
 
 

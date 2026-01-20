@@ -7,7 +7,8 @@ from app.agents.base_agent import BaseAgent, AgentResult
 from app.utils.llm import call_llm
 
 logger = structlog.get_logger()
-
+from dotenv import load_dotenv
+load_dotenv()
 
 class WriterAgent(BaseAgent):
     """

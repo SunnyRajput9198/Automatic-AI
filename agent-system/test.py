@@ -4,7 +4,11 @@ from app.agents.specialist.researcher_agent import ResearcherAgent
 from app.agents.specialist.enginer_agent import EngineerAgent
 from app.agents.specialist.writer_agent import WriterAgent
 from app.agents.coordinator.coordinator_agent import CoordinatorAgent
+from dotenv import load_dotenv
+load_dotenv()
 
+import os
+import anthropic
 
 async def test_researcher_agent():
     """Test Researcher Agent"""
