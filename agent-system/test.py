@@ -1,259 +1,200 @@
-
-
 import asyncio
-from typing import Dict, Any, Optional
-from app.agents.base_agent import BaseAgent, AgentResult
-from app.agents.coordinator.task_router import TaskRouter
+
+from app.agents.specialist.researcher_agent import ResearcherAgent
+from app.agents.specialist.enginer_agent import EngineerAgent
+from app.agents.specialist.writer_agent import WriterAgent
 from app.agents.coordinator.coordinator_agent import CoordinatorAgent
 
 
-# ============================================================================
-# MOCK AGENTS FOR TESTING
-# ============================================================================
-
-class MockResearcherAgent(BaseAgent):
-    """Mock researcher for testing"""
-    
-    def __init__(self):
-        super().__init__(
-            name="researcher_mock",
-            role="researcher",
-            allowed_tools=["web_search", "web_fetch"]
-        )
-    
-    async def execute(
-        self,
-        task: str,
-        context: Optional[Dict[str, Any]] = None
-    ) -> AgentResult:
-        """Mock execution - returns fake research"""
-        print(f"🔍 MockResearcher executing: {task}")
-        
-        return AgentResult(
-            success=True,
-            output="Mock research results: Python is a programming language.",
-            metadata={"sources": ["mock_source.com"]},
-            confidence=0.85,
-            agent_name=self.name
-        )
-
-
-class MockEngineerAgent(BaseAgent):
-    """Mock engineer for testing"""
-    
-    def __init__(self):
-        super().__init__(
-            name="engineer_mock",
-            role="engineer",
-            allowed_tools=["python_executor", "file_write", "file_read"]
-        )
-    
-    async def execute(
-        self,
-        task: str,
-        context: Optional[Dict[str, Any]] = None
-    ) -> AgentResult:
-        """Mock execution - returns fake code"""
-        print(f"💻 MockEngineer executing: {task}")
-        
-        return AgentResult(
-            success=True,
-            output="Mock code: print('Hello from engineer')",
-            metadata={"language": "python"},
-            confidence=0.9,
-            agent_name=self.name
-        )
-
-
-class MockWriterAgent(BaseAgent):
-    """Mock writer for testing"""
-    
-    def __init__(self):
-        super().__init__(
-            name="writer_mock",
-            role="writer",
-            allowed_tools=["file_write"]
-        )
-    
-    async def execute(
-        self,
-        task: str,
-        context: Optional[Dict[str, Any]] = None
-    ) -> AgentResult:
-        """Mock execution - returns fake content"""
-        print(f"✍️  MockWriter executing: {task}")
-        
-        # Check if we have researcher output
-        researcher_output = context.get("researcher_output", "")
-        
-        if researcher_output:
-            output = f"Mock article based on research:\n{researcher_output}"
-        else:
-            output = "Mock article: This is a test article."
-        
-        return AgentResult(
-            success=True,
-            output=output,
-            metadata={"word_count": 100},
-            confidence=0.8,
-            agent_name=self.name
-        )
-
-
-# ============================================================================
-# TEST FUNCTIONS
-# ============================================================================
-
-async def test_task_router():
-    """Test Task Router"""
+async def test_researcher_agent():
+    """Test Researcher Agent"""
     print("\n" + "="*60)
-    print("TEST 1: TASK ROUTER")
+    print("TEST 1: RESEARCHER AGENT")
     print("="*60)
     
-    router = TaskRouter()
+    researcher = ResearcherAgent()
     
-    test_cases = [
-        "Search for Python tutorials",
-        "Write a blog post about AI",
-        "Calculate fibonacci(50) using Python",
-        "Research AI trends and write a summary",
-        "Create a Python script for data processing"
-    ]
-    
-    for task in test_cases:
-        print(f"\n📋 Task: {task}")
-        decision = router.route(task)
-        print(f"   Agents: {decision.agents_needed}")
-        print(f"   Mode: {decision.execution_mode}")
-        print(f"   Confidence: {decision.confidence}")
-        print(f"   Reasoning: {decision.reasoning}")
-    
-    print("\n✅ Task Router Test Complete")
-
-
-async def test_coordinator_single_agent():
-    """Test Coordinator with single agent"""
-    print("\n" + "="*60)
-    print("TEST 2: COORDINATOR - SINGLE AGENT")
-    print("="*60)
-    
-    # Setup agents
-    available_agents = {
-        "researcher": MockResearcherAgent(),
-        "engineer": MockEngineerAgent(),
-        "writer": MockWriterAgent()
-    }
-    
-    coordinator = CoordinatorAgent(available_agents)
-    
-    # Test with research task
-    task = "Search for Python best practices"
+    task = "Search for Python async best practices"
     print(f"\n📋 Task: {task}")
     
-    result = await coordinator.coordinate(task)
+    result = await researcher.execute(task)
     
     print(f"\n📊 Results:")
     print(f"   Success: {result.success}")
-    print(f"   Agents Used: {result.total_agents}")
-    print(f"   Successful: {result.successful_agents}")
-    print(f"   Mode: {result.execution_mode}")
-    print(f"   Output Preview: {result.final_output[:100]}...")
+    print(f"   Confidence: {result.confidence}")
+    print(f"   Duration: {result.duration_sec:.2f}s")
+    print(f"   Agent: {result.agent_name}")
     
-    print("\n✅ Single Agent Test Complete")
-
-
-async def test_coordinator_multi_agent():
-    """Test Coordinator with multiple agents"""
-    print("\n" + "="*60)
-    print("TEST 3: COORDINATOR - MULTIPLE AGENTS")
-    print("="*60)
+    if result.success:
+        print(f"\n📄 Output Preview:")
+        print(result.output[:300] + "..." if len(result.output) > 300 else result.output)
+        print(f"\n   Metadata: {result.metadata}")
+    else:
+        print(f"\n❌ Errors: {result.errors}")
     
-    # Setup agents
-    available_agents = {
-        "researcher": MockResearcherAgent(),
-        "engineer": MockEngineerAgent(),
-        "writer": MockWriterAgent()
-    }
-    
-    coordinator = CoordinatorAgent(available_agents)
-    
-    # Test with multi-agent task
-    task = "Research AI trends then write a blog post about it"
-    print(f"\n📋 Task: {task}")
-    
-    result = await coordinator.coordinate(task)
-    
-    print(f"\n📊 Results:")
-    print(f"   Success: {result.success}")
-    print(f"   Agents Used: {result.total_agents}")
-    print(f"   Successful: {result.successful_agents}")
-    print(f"   Mode: {result.execution_mode}")
-    print(f"\n   Final Output:\n{result.final_output}")
-    
-    print(f"\n   Individual Agent Results:")
-    for agent_result in result.agent_results:
-        print(f"      - {agent_result['role']}: {agent_result['success']}")
-    
-    print("\n✅ Multi-Agent Test Complete")
-
-
-async def test_agent_stats():
-    """Test agent statistics tracking"""
-    print("\n" + "="*60)
-    print("TEST 4: AGENT STATISTICS")
-    print("="*60)
-    
-    agent = MockResearcherAgent()
-    
-    # Simulate some executions
-    for i in range(5):
-        await agent.execute(f"Task {i}")
-        agent.record_success()
-    
-    for i in range(2):
-        agent.record_failure()
-    
-    stats = agent.get_stats()
-    
-    print(f"\n📊 Agent Stats:")
-    print(f"   Name: {stats['name']}")
-    print(f"   Role: {stats['role']}")
+    print(f"\n📈 Agent Stats:")
+    stats = researcher.get_stats()
     print(f"   Calls: {stats['calls']}")
-    print(f"   Successes: {stats['successes']}")
-    print(f"   Failures: {stats['failures']}")
     print(f"   Success Rate: {stats['success_rate']:.2%}")
     
-    print("\n✅ Statistics Test Complete")
+    print("\n✅ Researcher Agent Test Complete")
+    
+    return result.success
 
 
-# ============================================================================
-# MAIN TEST RUNNER
-# ============================================================================
+async def test_engineer_agent():
+    """Test Engineer Agent"""
+    print("\n" + "="*60)
+    print("TEST 2: ENGINEER AGENT")
+    print("="*60)
+    
+    engineer = EngineerAgent()
+    
+    task = "Calculate the factorial of 15 using Python"
+    print(f"\n📋 Task: {task}")
+    
+    result = await engineer.execute(task)
+    
+    print(f"\n📊 Results:")
+    print(f"   Success: {result.success}")
+    print(f"   Confidence: {result.confidence}")
+    print(f"   Duration: {result.duration_sec:.2f}s")
+    print(f"   Agent: {result.agent_name}")
+    
+    if result.success:
+        print(f"\n📄 Output:")
+        print(result.output)
+        print(f"\n   Metadata: {result.metadata}")
+    else:
+        print(f"\n❌ Errors: {result.errors}")
+    
+    print(f"\n📈 Agent Stats:")
+    stats = engineer.get_stats()
+    print(f"   Calls: {stats['calls']}")
+    print(f"   Success Rate: {stats['success_rate']:.2%}")
+    
+    print("\n✅ Engineer Agent Test Complete")
+    
+    return result.success
+
+
+async def test_writer_agent():
+    """Test Writer Agent"""
+    print("\n" + "="*60)
+    print("TEST 3: WRITER AGENT")
+    print("="*60)
+    
+    writer = WriterAgent()
+    
+    task = "Write a blog post about Python async programming"
+    context = {
+        "researcher_output": "Python async allows concurrent execution using asyncio..."
+    }
+    
+    print(f"\n📋 Task: {task}")
+    print(f"📦 Context: researcher_output provided")
+    
+    result = await writer.execute(task, context)
+    
+    print(f"\n📊 Results:")
+    print(f"   Success: {result.success}")
+    print(f"   Confidence: {result.confidence}")
+    print(f"   Duration: {result.duration_sec:.2f}s")
+    print(f"   Agent: {result.agent_name}")
+    
+    if result.success:
+        print(f"\n📄 Output Preview:")
+        print(result.output[:400] + "..." if len(result.output) > 400 else result.output)
+        print(f"\n   Metadata: {result.metadata}")
+    else:
+        print(f"\n❌ Errors: {result.errors}")
+    
+    print(f"\n📈 Agent Stats:")
+    stats = writer.get_stats()
+    print(f"   Calls: {stats['calls']}")
+    print(f"   Success Rate: {stats['success_rate']:.2%}")
+    
+    print("\n✅ Writer Agent Test Complete")
+    
+    return result.success
+
+
+async def test_coordinator_with_real_agents():
+    """Test Coordinator with real specialist agents"""
+    print("\n" + "="*60)
+    print("TEST 4: COORDINATOR WITH REAL AGENTS")
+    print("="*60)
+    
+    # Setup real agents
+    available_agents = {
+        "researcher": ResearcherAgent(),
+        "engineer": EngineerAgent(),
+        "writer": WriterAgent()
+    }
+    
+    coordinator = CoordinatorAgent(available_agents)
+    
+    # Test multi-agent task
+    task = "Research Python async patterns and write a summary"
+    print(f"\n📋 Task: {task}")
+    
+    result = await coordinator.coordinate(task)
+    
+    print(f"\n📊 Coordination Results:")
+    print(f"   Success: {result.success}")
+    print(f"   Total Agents: {result.total_agents}")
+    print(f"   Successful: {result.successful_agents}")
+    print(f"   Failed: {result.failed_agents}")
+    print(f"   Mode: {result.execution_mode}")
+    
+    print(f"\n📄 Individual Agent Results:")
+    for agent_result in result.agent_results:
+        print(f"   - {agent_result['role']}: {agent_result['success']} (confidence: {agent_result.get('confidence', 0):.2f})")
+    
+    if result.success:
+        print(f"\n📝 Final Output Preview:")
+        print(result.final_output[:500] + "..." if len(result.final_output) > 500 else result.final_output)
+    
+    print("\n✅ Coordinator with Real Agents Test Complete")
+    
+    return result.success
+
 
 async def main():
-    """Run all Day 1 tests"""
+    """Run all Day 2 tests"""
     print("\n" + "="*60)
-    print("🧠 WEEK 4 - DAY 1 TESTS")
+    print("🧠 WEEK 4 - DAY 2 TESTS")
     print("="*60)
-    print("\nTesting: BaseAgent, TaskRouter, CoordinatorAgent")
+    print("\nTesting: Real Specialist Agents (Researcher, Engineer, Writer)")
     print("")
     
+    results = []
+    
     try:
-        # Run tests
-        await test_task_router()
-        await test_coordinator_single_agent()
-        await test_coordinator_multi_agent()
-        await test_agent_stats()
+        # Test each specialist agent
+        results.append(await test_researcher_agent())
+        results.append(await test_engineer_agent())
+        results.append(await test_writer_agent())
+        results.append(await test_coordinator_with_real_agents())
         
+        # Summary
         print("\n" + "="*60)
-        print("✅ ALL DAY 1 TESTS PASSED!")
+        if all(results):
+            print("✅ ALL DAY 2 TESTS PASSED!")
+        else:
+            print("⚠️  SOME TESTS FAILED")
         print("="*60)
-        print("\n📝 Day 1 Summary:")
-        print("   ✅ BaseAgent - Shared contract working")
-        print("   ✅ TaskRouter - Routing logic working")
-        print("   ✅ CoordinatorAgent - Basic coordination working")
-        print("   ✅ Agent stats - Performance tracking working")
-        print("\n🚀 Ready to move to Day 2: Specialist Agents!")
+        
+        print("\n📝 Day 2 Summary:")
+        print(f"   {'✅' if results[0] else '❌'} ResearcherAgent - Web research working")
+        print(f"   {'✅' if results[1] else '❌'} EngineerAgent - Code generation working")
+        print(f"   {'✅' if results[2] else '❌'} WriterAgent - Content creation working")
+        print(f"   {'✅' if results[3] else '❌'} Coordinator - Multi-agent coordination working")
+        
+        if all(results):
+            print("\n🚀 Ready to move to Day 3: Parallel Execution!")
+        else:
+            print("\n⚠️  Fix failing tests before Day 3")
         print("")
         
     except Exception as e:
