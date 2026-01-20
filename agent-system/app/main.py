@@ -40,3 +40,4 @@ async def root():
             "list_tasks": "GET /api/v1/tasks"
         }
     }
+    

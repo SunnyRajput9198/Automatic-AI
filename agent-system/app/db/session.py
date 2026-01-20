@@ -33,7 +33,7 @@ def get_db_context():
 def init_db():
     """Initialize database tables (Week 1 + Week 2)"""
     from app.models.task import Base as TaskBase
-    from app.models.memory import Base as MemoryBase
+    from app.models.memory import Base as MemoryBase    
     
     # Create Week 1 tables (tasks, steps)
     TaskBase.metadata.create_all(bind=engine)
