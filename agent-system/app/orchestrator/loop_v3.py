@@ -7,7 +7,7 @@ from typing import Dict, Any
 import json
 import time
 from pathlib import Path
-
+from app.orchestrator.recovery_manager import RecoveryManager
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
 from app.models.memory import TaskContext
@@ -18,8 +18,8 @@ from app.agents.coordinator.coordinator_agent import CoordinatorAgent
 from app.agents.specialist.researcher_agent import ResearcherAgent
 from app.agents.specialist.enginer_agent import EngineerAgent
 from app.agents.specialist.writer_agent import WriterAgent
-
-# WEEK 3 IMPORTS
+from app.orchestrator.agent_switcher import AgentSwitcher
+from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
 from app.agents.reasoner import ReasonerAgent
 from app.agents.reflection import ReflectionAgent
 from app.agents.search_decider import SearchDecider
@@ -101,7 +101,8 @@ async def execute_task_v3(task_id: str):
     critic = CriticAgent()
     reflection_agent = ReflectionAgent()
     search_decider = SearchDecider()
-    
+    recovery_manager = RecoveryManager()
+    agent_pref_memory = AgentPreferenceMemory()
     reasoning_output = None
     reflection_output = None
     
@@ -114,7 +115,7 @@ async def execute_task_v3(task_id: str):
                 return
             context: Dict[str, Any] = {
             "task_description": task.user_input
-        }
+               }
 
             # Update status
             task.status = TaskStatus.RUNNING
@@ -179,6 +180,7 @@ async def execute_task_v3(task_id: str):
                                         "writer": WriterAgent()
                                     }
                 coordinator = CoordinatorAgent(WEEK4_AGENTS)
+                agent_switcher = AgentSwitcher(WEEK4_AGENTS)
 
                 coordination_result = await coordinator.coordinate(task.user_input)
 
@@ -422,7 +424,12 @@ async def execute_task_v3(task_id: str):
                                 if filename not in task_context.created_files:
                                     task_context.created_files.append(filename)
                                     task_metrics["created_files"].append(filename)
-                        
+                            # ✅ DAY 5: learn agent preference
+                            agent_pref_memory.record_success(
+                                task_description=task.user_input,
+                                agent_name="executor"
+                            )
+
                         elif evaluation.verdict == Verdict.RETRY:
                             task_metrics["retries"] += 1
                             global_cost_tracker.record_retry()
@@ -437,53 +444,97 @@ async def execute_task_v3(task_id: str):
                             )
                             
                             await asyncio.sleep(1)
-                        
                         else:  # FAIL
-                            step.status = StepStatus.FAILED
-                            step.completed_at = datetime.utcnow()
-                            
                             logger.error(
                                 "orchestrator_step_failed",
                                 step_number=step_number,
                                 reason=evaluation.reason
                             )
-                            
-                            # Fail entire task
-                            task.status = TaskStatus.FAILED
-                            task.error_message = f"Step {step_number} failed: {evaluation.reason}"
-                            task.completed_at = datetime.utcnow()
-                            
-                            task_metrics["failures"].append({
-                                "step_number": step_number,
-                                "error": step.error,
-                                "category": classify_failure(step.error),
-                            })
-                            
-                            db.commit()
-                            
-                            # WEEK 3: Reflection on failure
+
+                            reflection_output = None
+
                             try:
                                 reflection_output = await reflection_agent.reflect(
                                     task=task,
                                     reasoning_used=reasoning_output.dict() if reasoning_output else None,
                                     search_used=should_search
                                 )
-                                task_metrics["reflection_generated"] = True
-                                task_metrics["reflection_lessons"] = reflection_output.lessons
-                                
-                                # Update confidence
-                                await conf_memory.update_confidence_from_reflection(
-                                    reflection=reflection_output,
-                                    task_pattern=reasoning_output.problem_type if reasoning_output else "unknown"
-                                )
-                                task_metrics["confidence_updates"] = len(reflection_output.confidence_updates)
-                                
                             except Exception as e:
-                                logger.error("orchestrator_reflection_failed", error=str(e))
-                            
-                            finalize_and_export(task_metrics)
-                            global_cost_tracker.complete_task(success=False)
+                                logger.error("reflection_failed", error=str(e))
+
+                            # 🧠 RECOVERY DECISION
+                            if reflection_output:
+                                decision = recovery_manager.decide(reflection_output.dict())
+
+                                logger.info(
+                                    "recovery_attempt",
+                                    action=decision.action,
+                                    reason=decision.reason
+                                )
+
+                                if decision.action == "retry":
+                                    retry_count += 1
+                                    continue
+
+                                if decision.action == "retry_with_smaller_prompt":
+                                    context["prompt_reduction"] = True
+                                    retry_count += 1
+                                    continue
+
+                                if decision.action == "switch_agent":
+                                    switched_result, new_agent = await agent_switcher.switch_and_execute(
+                                        failed_agent="executor",
+                                        instruction=step.instruction,
+                                        context=context
+                                    )
+
+                                    if switched_result:
+                                        step.result = switched_result.output
+                                        step.status = StepStatus.COMPLETED
+                                        step.completed_at = datetime.utcnow()
+
+                                        context[f"step_{step_number}_output"] = switched_result.output
+                                        context[f"step_{step_number}_success"] = True
+                                        context["recovered_by_agent"] = new_agent
+
+                                        logger.info(
+                                            "step_recovered_by_agent_switch",
+                                            step=step_number,
+                                            agent=new_agent
+                                        )
+                                      
+                                        step_succeeded = True
+                                        agent_pref_memory.record_success(
+                                            task_type=reasoning_output.problem_type if reasoning_output else "general",
+                                            agent_name="engineer"
+                                        )
+
+
+                                        break
+
+                                if decision.action == "skip_step":
+                                    step.status = StepStatus.SKIPPED
+                                    db.commit()
+                                    break
+
+                                if decision.action == "abort_task":
+                                    task.status = TaskStatus.FAILED
+                                    task.error_message = decision.reason
+                                    task.completed_at = datetime.utcnow()
+                                    db.commit()
+                                    finalize_and_export(task_metrics)
+                                    global_cost_tracker.complete_task(success=False)
+                                    return
+
+
+                            # fallback = hard fail
+                            step.status = StepStatus.FAILED
+                            task.status = TaskStatus.FAILED
+                            task.error_message = f"Step {step_number} failed"
+                            task.completed_at = datetime.utcnow()
+                            db.commit()
                             return
+                            
                         
                         db.commit()
                     
@@ -546,7 +597,39 @@ async def execute_task_v3(task_id: str):
             db.commit()
             
             logger.info("orchestrator_task_completed", task_id=task_id)
-            
+            # ====================================================
+            # 🧠 DAY 5: AGENT PREFERENCE LEARNING
+            # ====================================================
+
+            try:
+                if reasoning_output:
+                    task_type = reasoning_output.problem_type
+                else:
+                    task_type = "general"
+
+                # pick best agent used
+                best_agent = None
+
+                if "recovered_by_agent" in context:
+                    best_agent = context["recovered_by_agent"]
+                else:
+                    # default executor success
+                    best_agent = "executor"
+
+                agent_pref_memory.record_success(
+                    task_type=task_type,
+                    agent_name=best_agent
+                )
+
+                logger.info(
+                    "agent_preference_learned",
+                    task_type=task_type,
+                    agent=best_agent
+                )
+
+            except Exception as e:
+                logger.error("agent_preference_update_failed", error=str(e))
+
             # Generate reflection
             try:
                 start_time = time.time()

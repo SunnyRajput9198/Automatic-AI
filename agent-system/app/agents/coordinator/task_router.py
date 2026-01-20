@@ -1,7 +1,7 @@
 import structlog
 from typing import List, Dict, Any
 from pydantic import BaseModel
-
+from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
 logger = structlog.get_logger()
 
 
@@ -46,7 +46,8 @@ class TaskRouter:
     ]
     
     def __init__(self):
-        pass
+        self.pref_memory = AgentPreferenceMemory()
+
     
     def route(self, task: str) -> RoutingDecision:
         """
@@ -59,7 +60,21 @@ class TaskRouter:
             RoutingDecision with agents and execution mode
         """
         task_lower = task.lower()
-        
+        preferred_agent = self.pref_memory.get_preferred_agent(task)
+
+        if preferred_agent:
+            logger.info(
+                "router_using_agent_preference",
+                agent=preferred_agent
+            )
+
+            return RoutingDecision(
+                agents_needed=[preferred_agent],
+                execution_mode="sequential",
+                reasoning=f"Agent preference memory selected {preferred_agent}",
+                confidence=0.95
+            )
+
         # Detect which agents are needed
         agents_needed = []
         keywords_found = []

@@ -55,7 +55,10 @@ class ExecutorAgent:
     }},
     "reasoning": "why this tool and these inputs"
     }}
-
+ IMPORTANT:
+If a task requires external libraries (flask, fastapi, django, etc),
+DO NOT execute them.
+Instead, generate code as a file or plain output without running it.
     For code in JSON strings:
     - Use escaped newlines: \\n
     - Keep code simple and focused
