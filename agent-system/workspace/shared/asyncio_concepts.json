@@ -1,0 +1,42 @@
+{
+  "async_await": {
+    "name": "Async/Await Syntax",
+    "description": "Keywords for defining and calling asynchronous functions",
+    "key_points": [
+      "'async def' defines a coroutine function",
+      "'await' pauses execution until an awaitable completes",
+      "Enables readable, sequential-looking asynchronous code",
+      "Cleaner alternative to callback-based approaches"
+    ]
+  },
+  "event_loop": {
+    "name": "Event Loop",
+    "description": "The core scheduler that manages and executes coroutines",
+    "key_points": [
+      "Runs coroutines concurrently within a single thread",
+      "Handles I/O operations asynchronously",
+      "Switches between tasks when they await",
+      "Created and managed by asyncio.run() or manually"
+    ]
+  },
+  "coroutines": {
+    "name": "Coroutines",
+    "description": "Functions defined with 'async def' that can be paused and resumed",
+    "key_points": [
+      "Primary building blocks of asyncio programs",
+      "Can yield control to other coroutines",
+      "Must be awaited or scheduled as tasks",
+      "Return values when completed"
+    ]
+  },
+  "tasks": {
+    "name": "Tasks",
+    "description": "Wrapped coroutines scheduled for execution by the event loop",
+    "key_points": [
+      "Created with asyncio.create_task()",
+      "Run concurrently with other tasks",
+      "Can be cancelled or awaited",
+      "Enable true concurrent execution of multiple coroutines"
+    ]
+  }
+}

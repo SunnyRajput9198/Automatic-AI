@@ -14,16 +14,17 @@ async def main():
 
     coordinator = CoordinatorAgent(agents)
 
-    print("\n🔥 PARALLEL TEST")
-    result = await coordinator.coordinate(
-        "Search Python asyncio best practices and calculate factorial of 20"
-    )
+    print("\n🔥 RUN 1")
+    await coordinator.coordinate("Research Python asyncio and write summary")
 
-    print("Mode:", result.execution_mode)
-    print("Successful:", result.successful_agents)
-    print("Agents used:", result.total_agents)
-    print("\nOutput preview:\n")
-    print(result.final_output[:500])
+    print("\n🔥 RUN 2")
+    await coordinator.coordinate("Research Python asyncio and write summary")
+
+    print("\n🔥 RUN 3")
+    await coordinator.coordinate("Research Python asyncio and write summary")
+
+    print("\n🧠 Check this file:")
+    print("workspace/agent_performance.json")
 
 
 if __name__ == "__main__":

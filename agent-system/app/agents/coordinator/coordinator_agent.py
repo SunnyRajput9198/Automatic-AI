@@ -4,9 +4,8 @@ from pydantic import BaseModel
 import asyncio
 from app.agents.base_agent import BaseAgent, AgentResult, BaseAgent
 from app.agents.coordinator.task_router import TaskRouter
-
+from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
 logger = structlog.get_logger()
-
 
 class CoordinationResult(BaseModel):
     """Result from coordinating multiple agents"""
@@ -52,7 +51,8 @@ class CoordinatorAgent:
         """
         self.available_agents = available_agents
         self.router = TaskRouter()
-        
+        self.agent_memory = AgentPerformanceMemory()
+    
         logger.info(
             "coordinator_initialized",
             available_agents=list(available_agents.keys())
@@ -123,6 +123,36 @@ class CoordinatorAgent:
                 if result.success:
                     execution_context[f"{role}_output"] = result.output
                     execution_context[f"{role}_success"] = True
+            for role, result in zip(roles, results):
+
+                if isinstance(result, Exception):
+                    agent_results.append({
+                        "agent": role,
+                        "role": role,
+                        "success": False,
+                        "output": "",
+                        "error": str(result)
+                    })
+                    continue
+
+                agent_results.append({
+                    "agent": result.agent_name,
+                    "role": role,
+                    "success": result.success,
+                    "output": result.output,
+                    "confidence": result.confidence,
+                    "metadata": result.metadata,
+                    "errors": result.errors
+                })
+
+                agent = self.available_agents.get(role)
+                if agent:
+                    self.agent_memory.update(agent.name, agent.get_stats())
+
+                if result.success:
+                    execution_context[f"{role}_output"] = result.output
+                    execution_context[f"{role}_success"] = True
+
 
         # ==================================================
         # 🧭 SEQUENTIAL EXECUTION (Day 1–2 behavior)
@@ -151,7 +181,10 @@ class CoordinatorAgent:
 
                 try:
                     result = await agent.execute(task, execution_context)
-
+                    self.agent_memory.update(
+                            agent.name,
+                            agent.get_stats()
+                        )
                     agent_results.append({
                         "agent": agent.name,
                         "role": agent.role,

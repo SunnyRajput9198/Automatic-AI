@@ -14,6 +14,10 @@ from app.models.memory import TaskContext
 from app.agents.planner import PlannerAgent
 from app.agents.executor import ExecutorAgent
 from app.agents.critic import CriticAgent, Verdict
+from app.agents.coordinator.coordinator_agent import CoordinatorAgent
+from app.agents.specialist.researcher_agent import ResearcherAgent
+from app.agents.specialist.enginer_agent import EngineerAgent
+from app.agents.specialist.writer_agent import WriterAgent
 
 # WEEK 3 IMPORTS
 from app.agents.reasoner import ReasonerAgent
@@ -90,7 +94,6 @@ async def execute_task_v3(task_id: str):
     }
     
     logger.info("orchestrator_v3_started", task_id=task_id)
-    
     # Initialize agents
     reasoner = ReasonerAgent()
     planner = PlannerAgent()
@@ -109,7 +112,10 @@ async def execute_task_v3(task_id: str):
             if not task:
                 logger.error("orchestrator_task_not_found", task_id=task_id)
                 return
-            
+            context: Dict[str, Any] = {
+            "task_description": task.user_input
+        }
+
             # Update status
             task.status = TaskStatus.RUNNING
             db.commit()
@@ -162,6 +168,30 @@ async def execute_task_v3(task_id: str):
                     confidence=reasoning_output.confidence,
                     strategy=reasoning_output.strategy
                 )
+                # ================================================================
+# WEEK 4: MULTI-AGENT COORDINATION (Day 4)
+# ================================================================
+                logger.info("orchestrator_week4_coordination")
+
+                WEEK4_AGENTS = {
+                                        "researcher": ResearcherAgent(),
+                                        "engineer": EngineerAgent(),
+                                        "writer": WriterAgent()
+                                    }
+                coordinator = CoordinatorAgent(WEEK4_AGENTS)
+
+                coordination_result = await coordinator.coordinate(task.user_input)
+
+                # Store in context for planner/executor
+                context.update({
+                    "reasoning": reasoning_output.dict() if reasoning_output else None,
+                    "week4_output": coordination_result.final_output
+                })
+
+
+                task_metrics["week4_agents_used"] = coordination_result.total_agents
+                task_metrics["week4_successful_agents"] = coordination_result.successful_agents
+
                 
             except Exception as e:
                 logger.error("orchestrator_reasoning_failed", error=str(e))
@@ -275,12 +305,11 @@ async def execute_task_v3(task_id: str):
             # ================================================================
             # PHASE 4: EXECUTION with Full Context
             # ================================================================
-            context: Dict[str, Any] = {
-                "task_description": task.user_input,
+            context.update({
                 "memories": similar_memories,
-                "reasoning": reasoning_output.dict() if reasoning_output else None,
                 "should_search": should_search
-            }
+            })
+
             
             for step_data in plan:
                 step_number = step_data["step"]

@@ -20,5 +20,7 @@ COPY . .
 RUN mkdir -p /app/sandbox && chmod 777 /app/sandbox
 RUN mkdir -p /app/workspace/shared && chmod 777 /app/workspace
 RUN mkdir -p /app/traces && chmod 777 /app/traces
+# 🔥 VERY IMPORTANT
+VOLUME ["/app/workspace"]
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -60,6 +60,7 @@ async def create_task(
     
     # Execute task in background
     background_tasks.add_task(execute_task, task_id)
+
     
     return TaskResponse(
         task_id=task.id,
