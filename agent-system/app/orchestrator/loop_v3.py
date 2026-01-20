@@ -25,6 +25,8 @@ from app.agents.reflection import ReflectionAgent
 from app.agents.search_decider import SearchDecider
 from app.agents.confidence_memory import ConfidenceMemory
 from app.utils.cost_tracker import global_cost_tracker
+from app.agents.memory.tool_failure_memory import ToolFailureMemory
+
 
 logger = structlog.get_logger()
 
@@ -100,12 +102,13 @@ async def execute_task_v3(task_id: str):
     executor = ExecutorAgent()
     critic = CriticAgent()
     reflection_agent = ReflectionAgent()
+    tool_failure_memory = ToolFailureMemory()
     search_decider = SearchDecider()
     recovery_manager = RecoveryManager()
     agent_pref_memory = AgentPreferenceMemory()
     reasoning_output = None
     reflection_output = None
-    
+    new_agent = None
     try:
         with get_db_context() as db:
             # Load task
@@ -172,6 +175,16 @@ async def execute_task_v3(task_id: str):
                 # ================================================================
 # WEEK 4: MULTI-AGENT COORDINATION (Day 4)
 # ================================================================
+                preferred_agent = agent_pref_memory.get_preferred_agent(task.user_input)
+
+                if preferred_agent:
+                    context["preferred_agent"] = preferred_agent
+
+                    logger.info(
+                        "preferred_agent_applied",
+                        agent=preferred_agent
+                    )
+
                 logger.info("orchestrator_week4_coordination")
 
                 WEEK4_AGENTS = {
@@ -182,7 +195,8 @@ async def execute_task_v3(task_id: str):
                 coordinator = CoordinatorAgent(WEEK4_AGENTS)
                 agent_switcher = AgentSwitcher(WEEK4_AGENTS)
 
-                coordination_result = await coordinator.coordinate(task.user_input)
+                coordination_result = await coordinator.coordinate(task.user_input, context=context)
+
 
                 # Store in context for planner/executor
                 context.update({
@@ -329,7 +343,7 @@ async def execute_task_v3(task_id: str):
                 logger.info("orchestrator_executing_step", step_number=step_number)
                 
                 # Retry loop
-                max_retries = 3
+                max_retries = 2
                 retry_count = 0
                 step_succeeded = False
                 
@@ -340,6 +354,14 @@ async def execute_task_v3(task_id: str):
                     
                     # Execute step
                     try:
+                        avoid_tools = []
+
+                        for tool in ["python_executor", "shell_executor"]:
+                            if tool_failure_memory.should_avoid(tool):
+                                avoid_tools.append(tool)
+
+                        context["avoid_tools"] = avoid_tools
+
                         start_time = time.time()
                         tool_result = await executor.execute_step(
                             instruction=step.instruction,
@@ -370,7 +392,12 @@ async def execute_task_v3(task_id: str):
                             step_number=step_number,
                             success=tool_result.success
                         )
-                        
+                        if not tool_result.success:
+                            if tool_result.metadata and tool_result.metadata.get("tool_name"):
+                                tool_failure_memory.record_failure(
+                                    tool_result.metadata["tool_name"]
+                                )
+
                         # Critic evaluation
                         start_time = time.time()
                         evaluation = await critic.evaluate(
@@ -465,6 +492,19 @@ async def execute_task_v3(task_id: str):
                             # 🧠 RECOVERY DECISION
                             if reflection_output:
                                 decision = recovery_manager.decide(reflection_output.dict())
+                                if decision.action not in {
+                                    "retry",
+                                    "retry_with_smaller_prompt",
+                                    "switch_agent",
+                                    "skip_step",
+                                    "abort_task"
+                                }:
+                                    logger.warning(
+                                        "invalid_recovery_action",
+                                        action=decision.action,
+                                        fallback="retry"
+                                    )
+                                    decision.action = "retry"
 
                                 logger.info(
                                     "recovery_attempt",
@@ -505,9 +545,10 @@ async def execute_task_v3(task_id: str):
                                       
                                         step_succeeded = True
                                         agent_pref_memory.record_success(
-                                            task_type=reasoning_output.problem_type if reasoning_output else "general",
-                                            agent_name="engineer"
+                                            task_description=task.user_input,
+                                            agent_name=new_agent
                                         )
+
 
 
                                         break
@@ -615,9 +656,8 @@ async def execute_task_v3(task_id: str):
                 else:
                     # default executor success
                     best_agent = "executor"
-
                 agent_pref_memory.record_success(
-                    task_type=task_type,
+                    task_description=task.user_input,
                     agent_name=best_agent
                 )
 
@@ -626,6 +666,7 @@ async def execute_task_v3(task_id: str):
                     task_type=task_type,
                     agent=best_agent
                 )
+
 
             except Exception as e:
                 logger.error("agent_preference_update_failed", error=str(e))

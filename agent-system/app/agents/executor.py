@@ -116,6 +116,11 @@ IMPORTANT for {tool.name}:
 
         logger.info("executor_starting", instruction=instruction)
         context = context or {}
+        avoid_tools = context.get("avoid_tools", [])
+
+        if "python_executor" in avoid_tools:
+            logger.warning("forcing_tool_due_to_failures", tool="file_write")
+            context["forced_tool"] = "file_write"
 
         # ----------------------------------
         # 🔥 YOUR DETERMINISTIC FALLBACK (NO LLM)
@@ -151,7 +156,17 @@ IMPORTANT for {tool.name}:
             )
 
         tool_name = tool_decision.get("tool")
+        
         tool_inputs = tool_decision.get("inputs", {})
+        forced_tool = context.get("forced_tool")
+        if forced_tool:
+            logger.warning(
+                "forcing_tool_override",
+                chosen=tool_name,
+                forced=forced_tool
+            )
+            tool_name = forced_tool
+
         reasoning = tool_decision.get("reasoning", "")
 
         logger.info(
@@ -159,6 +174,18 @@ IMPORTANT for {tool.name}:
             tool=tool_name,
             reasoning=reasoning,
         )
+        # 🚫 Hard block avoided tools
+        if tool_name in avoid_tools:
+            logger.warning(
+                "blocked_avoided_tool",
+                tool=tool_name,
+                avoid_tools=avoid_tools
+            )
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Tool '{tool_name}' is blocked due to repeated failures"
+            )
 
         # Validate tool exists
         if tool_name not in self.tools:
@@ -224,6 +251,9 @@ IMPORTANT for {tool.name}:
                 + json.dumps(context, indent=2)
             )
 
+        if context.get("forced_tool"):
+             user_prompt += f"\n\nYOU MUST USE TOOL: {context['forced_tool']}"
+
         user_prompt = f"""STEP INSTRUCTION:
     {instruction}
     {context_str}
@@ -235,6 +265,8 @@ IMPORTANT for {tool.name}:
     For web_* tools, use proper queries or URLs.
     Return JSON only.
     """
+        if context.get("avoid_tools"):
+            user_prompt += f"\n\nDO NOT USE THESE TOOLS: {context['avoid_tools']}"
 
         try:
             response = await call_llm(

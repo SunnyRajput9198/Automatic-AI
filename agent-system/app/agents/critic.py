@@ -31,7 +31,7 @@ class CriticAgent:
     THIS IS WHAT MAKES THE SYSTEM AUTONOMOUS.
     """
 
-    MAX_RETRIES = 3
+    MAX_RETRIES = 2
 
     SYSTEM_PROMPT = """You are a critical evaluator agent. Your job is to:
 1. Analyze if a step execution was successful

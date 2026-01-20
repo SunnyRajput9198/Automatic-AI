@@ -194,7 +194,7 @@ async def execute_task(task_id: str):
                 logger.info("orchestrator_executing_step", step_number=step_number)
                 
                 # Retry loop
-                max_retries = 3
+                max_retries = 2
                 retry_count = 0
                 step_succeeded = False
                 

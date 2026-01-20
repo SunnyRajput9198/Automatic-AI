@@ -1,3 +1,5 @@
 {
-  "['write', 'python', 'api', 'to']": "executor"
+  "['write', 'python', 'api', 'to']": "executor",
+  "['use', 'python_executor', 'to', 'run']": "executor",
+  "['write', 'a', 'python', 'api']": "executor"
 }
