@@ -10,7 +10,6 @@ from app.agents.reasoner import ReasonerAgent
 from app.agents.reflection import ReflectionAgent
 from app.agents.search_decider import SearchDecider
 
-
 __all__ = [
     "BaseAgent",
     "AgentResult",

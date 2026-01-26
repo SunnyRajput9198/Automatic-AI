@@ -1,17 +1,28 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
+
+# Database
 sqlalchemy==2.0.25
-psycopg2-binary==2.9.9
+psycopg[binary]==3.1.18
 alembic==1.13.1
+
+# Config
 pydantic==2.5.3
 pydantic-settings==2.1.0
-openai==1.10.0
-anthropic==0.18.1
+
+# HTTP
 httpx==0.26.0
 python-multipart==0.0.6
+
+# Logging
 structlog==24.1.0
+
+# LLMs
+openai==1.10.0
+anthropic==0.18.1
 langchain
-anthropic
 langchain-google-genai
 google-genai
-bs4
+
+# Utils
+beautifulsoup4

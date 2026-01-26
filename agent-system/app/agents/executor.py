@@ -9,6 +9,7 @@ from app.tools.python_tool import PythonExecutor
 from app.tools.shell_tool import ShellExecutor
 from app.tools.file_tools import FileReadTool, FileWriteTool, FileListTool, FileDeleteTool
 from app.tools.web_search import WebSearchTool, WebFetchTool
+from app.core.config import settings
 
 logger = structlog.get_logger()
 
@@ -74,7 +75,11 @@ Instead, generate code as a file or plain output without running it.
         
         # Initialize file manager (Week 2)
         self.file_manager = FileManager()
+        if settings.ENABLE_PYTHON_EXECUTOR:
+            self._register_tool(PythonExecutor())
 
+        if settings.ENABLE_SHELL:
+            self._register_tool(ShellExecutor())
         # Register Week 1 tools
         self._register_tool(PythonExecutor())
         self._register_tool(ShellExecutor())
@@ -134,7 +139,14 @@ IMPORTANT for {tool.name}:
                 if "workspace" in instruction_l or "persistent" in instruction_l:
                     return await self.tools["file_list"].run()
                 else:
-                    return await self.tools["shell_executor"].run(command="ls -la")
+                     if settings.ENABLE_SHELL:
+                                return await self.tools["shell_executor"].run(command="ls -la")
+                     else:
+                            return ToolResult(
+                                success=False,
+                                output="",
+                                error="Shell executor disabled in production"
+                            )
 
         except Exception as e:
             logger.warning(

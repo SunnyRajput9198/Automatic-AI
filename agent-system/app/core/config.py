@@ -1,19 +1,23 @@
-import os
-from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 
-load_dotenv()
 
-class Settings:
-    APP_ENV = os.getenv("APP_ENV", "development")
-    APP_NAME = os.getenv("APP_NAME", "agent-system")
-    PORT = int(os.getenv("PORT", 8000))
+class Settings(BaseSettings):
+    ENV: str = "development"
 
-    DATABASE_URL = os.getenv("DATABASE_URL")
+    DATABASE_URL: str
+    ANTHROPIC_API_KEY: str | None = None
 
-    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
-    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    WORKSPACE_DIR: str = "/app/workspace"
+    SANDBOX_DIR: str = "/app/sandbox"
 
-    LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
+    ENABLE_SHELL: bool = False
+    ENABLE_PYTHON_EXECUTOR: bool = True
+
+    model_config = ConfigDict(
+        env_file=".env",
+        extra="allow"
+    )
 
 
 settings = Settings()

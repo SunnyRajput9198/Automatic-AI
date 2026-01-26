@@ -1,41 +1,30 @@
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: agent-postgres
     environment:
       POSTGRES_DB: agent_system
       POSTGRES_USER: agent
       POSTGRES_PASSWORD: agent_password
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agent -d agent_system"]
+      test: ["CMD-SHELL", "pg_isready -U agent"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   api:
     build: .
-    container_name: agent-api
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://agent:agent_password@postgres:5432/agent_system
+      DATABASE_URL: postgresql+psycopg2://agent:agent_password@postgres:5432/agent_system
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       WORKSPACE_DIR: /app/workspace
-      ENABLE_SHELL: "false"
-      ENABLE_PYTHON_EXECUTOR: "true"
       SANDBOX_DIR: /app/sandbox
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ./workspace:/app/workspace      
-      - ./sandbox:/app/sandbox           
-      - ./traces:/app/traces             
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 
 
 volumes:
   postgres_data:
