@@ -4,7 +4,7 @@ import structlog
 
 from app.db.session import init_db
 from app.api import tasks
-
+from app.api import health
 logger = structlog.get_logger()
 
 @asynccontextmanager
@@ -22,6 +22,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+app.include_router(health.router)
 
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
 

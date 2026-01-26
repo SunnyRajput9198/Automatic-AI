@@ -16,38 +16,24 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    container_name: agent-redis
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   api:
     build: .
     container_name: agent-api
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://agent:agent_password@postgres:5432/agent_system
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql+psycopg2://agent:agent_password@postgres:5432/agent_system
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       WORKSPACE_DIR: /app/workspace
       SANDBOX_DIR: /app/sandbox
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
-      - ./app:/app/app
-      - ./workspace:/app/workspace      # Week 2: Persistent file storage
-      - ./sandbox:/app/sandbox           # Week 1: Temporary execution
-      - ./traces:/app/traces             # Your enhancement: Task traces
+      - ./app:/app
+      - ./workspace:/app/workspace      
+      - ./sandbox:/app/sandbox           
+      - ./traces:/app/traces             
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 
 
 volumes:
