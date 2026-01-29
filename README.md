@@ -52,5 +52,3 @@ A production-ready autonomous multi-agent system that can plan, execute, evaluat
 
 ---
 
-## 📂 Project Structure
-
