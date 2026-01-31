@@ -1,8 +1,10 @@
 # Autonomous Agent System
 
-**An AI system that actually thinks before it acts.**
+**Building an AI system that thinks before it acts.**
 
-Give it a task. Watch it break the problem down, pick the right tools, execute the plan, validate the results, and learn from what happened. No hand-holding required.
+Currently: A working orchestration layer with reasoning and coordination. The system can analyze tasks, pick strategies, and execute them using tools.
+
+Still building: The specialized agents that enable full autonomy (planning, smart execution, validation, learning).
 
 Built with FastAPI, PostgreSQL, Next.js, and Claude AI.
 
@@ -16,50 +18,74 @@ This system is different. It has a **reasoning layer** that analyzes tasks befor
 
 ---
 
-## What It Actually Does
+## What It Can Do (Right Now)
 
-Feed it complex, multi-step tasks:
-- "Research the top 10 AI papers from 2024, summarize key findings, and create a comparison table"
-- "Analyze this CSV, find anomalies, generate visualizations, and write a report"  
-- "Scrape these 5 websites, extract product data, merge it, and export to JSON"
-- "Review this codebase, identify security issues, suggest fixes with code examples"
+The Reasoner and Coordinator are working. They can:
+- Analyze task complexity and choose execution strategies
+- Route tasks to the right tools
+- Execute Python code, read/write files, make web requests
+- Handle basic multi-step workflows
 
-The system figures out how to do it. No templates. No rigid workflows. Just intelligent execution.
+**What works:**
+- Simple data processing (read CSV, run calculations, output results)
+- File operations (create, modify, organize files)
+- Web requests (fetch data from APIs)
+- Basic Python execution (data analysis, simple scripts)
+
+**What doesn't work yet:**
+- Complex planning (Planner agent still in progress)
+- Smart tool selection (Executor needs refinement)
+- Quality validation (Critic agent not done)
+- Learning from failures (Reflection agent planned)
+
+Translation: It can execute tasks you give it clear instructions for. It can't yet figure out complex tasks on its own.
 
 ---
 
-## How It Works
+## How It Works (Current State)
 
 ```
 USER
   ↓
-  "Analyze sales data and create a report"
+  "Process this CSV file"
   ↓
 FASTAPI BACKEND
   ↓ Creates task, starts background job
   ↓
-ORCHESTRATOR V3
+ORCHESTRATOR V3 ✅ WORKING
   ↓ Manages lifecycle, handles failures, logs everything
   ↓
-REASONER AGENT
-  ↓ "This is a data analysis task with medium complexity"
-  ↓ "Need: file reading, Python execution, report generation"
+REASONER AGENT ✅ WORKING
+  ↓ "This is a data processing task, low complexity"
+  ↓ "Tools needed: file reading, Python execution"
   ↓
-COORDINATOR AGENT  
-  ↓ Assigns: Planner → Executor → Critic → Reflection
+COORDINATOR AGENT ✅ WORKING
+  ↓ "Route to Python executor, output to file"
   ↓
-SPECIALIZED AGENTS
-  │
-  ├─ PLANNER: "Step 1: Read CSV, Step 2: Analyze, Step 3: Generate report"
-  ├─ EXECUTOR: Runs Python analysis, creates visualizations
-  ├─ CRITIC: "Data looks good, but add statistical summary"
-  └─ REFLECTION: "Learned: CSV analysis tasks need data validation first"
+TOOL LAYER ✅ WORKING
+  ↓ Python executor runs analysis
+  ↓ File writer saves results
   ↓
 RESULT
-  "sales_report.pdf generated successfully"
+  "analysis_complete.csv generated"
+
+
+WHAT'S MISSING (in progress):
+  
+  🚧 PLANNER AGENT
+     Would break complex tasks into steps
+  
+  🚧 EXECUTOR AGENT  
+     Would intelligently select best tools
+  
+  🚧 CRITIC AGENT
+     Would validate outputs
+  
+  🚧 REFLECTION AGENT
+     Would learn from outcomes
 ```
 
-**The key insight**: Each agent has a specific job. They communicate, adapt, and improve. Just like a real team.
+Right now it's a smart task router with tool execution. The full agent system is being built on top of this foundation.
 
 ---
 
@@ -144,16 +170,34 @@ npm run dev
 
 ## Try It Out
 
-Send a task:
+**What actually works today:**
+
 ```bash
+# Simple file processing
 curl -X POST http://localhost:8000/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
-    "prompt": "Find the top 5 trending Python libraries this week and explain what they do"
+    "prompt": "Read data.csv and calculate the average of column A"
+  }'
+
+# Basic web request
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Fetch https://api.github.com/users/SunnyRajput9198 and save to file"
+  }'
+
+# Python execution  
+curl -X POST http://localhost:8000/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Generate 100 random numbers and calculate statistics"
   }'
 ```
 
 Or use the UI at `http://localhost:3000`
+
+**Note**: Complex multi-step tasks that require planning and validation aren't reliable yet. Stick to single-step or clearly defined workflows.
 
 ---
 
@@ -206,18 +250,42 @@ This is a **work in progress**. It works for basic tasks. Complex workflows are 
 
 ## Why This Matters
 
-Most "AI agent" projects are demos. This is designed to be **actually useful**.
+**Current Reality:**
+This is a foundation. The orchestration layer, reasoning, and coordination work. Tool execution works. But the specialized agents that enable true autonomy are still being built.
 
-The architecture is intentionally overbuilt for what it currently does. Why? Because the hard part isn't making an LLM call—it's building the orchestration layer that makes agents reliable, debuggable, and scalable.
+**The Vision:**
+Most "AI agent" projects hard-code workflows or use brittle prompt chains. This is designed to be different—a system where agents actually reason about tasks, coordinate with each other, and improve over time.
 
-This is the foundation for:
+**The Hard Part:**
+It's not making LLM calls. It's building the orchestration layer that makes agents:
+- Reliable (handle failures gracefully)
+- Debuggable (trace what happened and why)  
+- Scalable (add new agents and tools easily)
+- Adaptive (learn from outcomes)
+
+That's what's being built here. The foundation is done. The specialized agents are next.
+
+**End Goal:**
 - Autonomous research assistants
-- Code review bots that actually understand context
-- Data processing pipelines that adapt to messy inputs
-- Task automation that doesn't break when things change
+- Code review bots that understand context
+- Data pipelines that adapt to messy inputs
+- Task automation that doesn't break
+
+Not there yet. But the architecture is designed to get there.
 
 ---
 
+## Contributing
+
+This is an open project. If you want to:
+- Add a new tool
+- Build a specialized agent
+- Improve the coordinator logic
+- Fix bugs
+
+Just fork, make changes, and submit a PR. No formal process.
+
+---
 
 ## License
 
