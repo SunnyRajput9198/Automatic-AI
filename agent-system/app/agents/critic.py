@@ -8,16 +8,17 @@ from app.tools.base import ToolResult
 
 logger = structlog.get_logger()
 
-
+# This file answers one question after every step: "Did that work?" 
+# Three possible outcomes. str, Enum means these are both enum values AND strings, so they can be stored in the database as text without extra conversion.
 class Verdict(str, Enum):
     PASS = "PASS"
     RETRY = "RETRY"
     FAIL = "FAIL"
 
 
+# Simple container holding the verdict + why + what to try differently. 
 class CriticResult:
     """Result of critic evaluation"""
-
     def __init__(self, verdict: Verdict, reason: str, suggestions: str = ""):
         self.verdict = verdict
         self.reason = reason

@@ -17,6 +17,7 @@ class StepStatus(str, Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
     RETRYING = "RETRYING"
 
 class Task(Base):

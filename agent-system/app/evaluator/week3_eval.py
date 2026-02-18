@@ -3,6 +3,7 @@ import json
 import structlog
 from pathlib import Path
 from typing import List, Dict, Any
+import uuid
 from datetime import datetime
 from tabulate import tabulate
 
@@ -66,7 +67,8 @@ class Week3Evaluator:
             with get_db_context() as db:
                 task = Task(
                     user_input=task_description,
-                    status="PENDING"
+                    status="PENDING",
+                    id=str(uuid.uuid4())
                 )
                 db.add(task)
                 db.commit()

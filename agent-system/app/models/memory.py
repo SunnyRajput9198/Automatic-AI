@@ -1,8 +1,7 @@
 from datetime import datetime
 from sqlalchemy import Column, String, DateTime, Text, Integer, Float, JSON
 from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
+from app.db.base import Base
 
 class Memory(Base):
     """

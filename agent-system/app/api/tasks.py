@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import uuid
 import structlog
-
+from app.db.base import Base
 from app.db.session import get_db
 from app.models.task import Task, Step, TaskStatus
 from app.orchestrator.loop_v3 import execute_task_v3 as execute_task

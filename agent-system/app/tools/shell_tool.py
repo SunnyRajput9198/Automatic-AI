@@ -79,14 +79,14 @@ class ShellExecutor(Tool):
         os.makedirs(sandbox_dir, exist_ok=True)
         
         try:
+            shared_workspace = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared"),
+            os.makedirs(shared_workspace, exist_ok=True)
             result = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=30,
-                shared_workspace = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared"),
-                # os.makedirs(shared_workspace, exist_ok=True)
                 cwd=shared_workspace  # Isolate in shared workspace
                 )
             

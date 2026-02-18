@@ -451,11 +451,6 @@ async def execute_task_v3(task_id: str):
                                 if filename not in task_context.created_files:
                                     task_context.created_files.append(filename)
                                     task_metrics["created_files"].append(filename)
-                            # ✅ DAY 5: learn agent preference
-                            agent_pref_memory.record_success(
-                                task_description=task.user_input,
-                                agent_name="executor"
-                            )
 
                         elif evaluation.verdict == Verdict.RETRY:
                             task_metrics["retries"] += 1

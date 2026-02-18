@@ -13,7 +13,7 @@ pydantic-settings==2.1.0
 # HTTP
 httpx==0.26.0
 python-multipart==0.0.6
-
+tabulate
 # Logging
 structlog==24.1.0
 

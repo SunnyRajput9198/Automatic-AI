@@ -10,7 +10,7 @@ from app.tools.shell_tool import ShellExecutor
 from app.tools.file_tools import FileReadTool, FileWriteTool, FileListTool, FileDeleteTool
 from app.tools.web_search import WebSearchTool, WebFetchTool
 from app.core.config import settings
-
+# This file answers: "Which tool should I use, and what exactly should I pass to it?"
 logger = structlog.get_logger()
 
 
@@ -264,9 +264,10 @@ IMPORTANT for {tool.name}:
             )
 
         if context.get("forced_tool"):
-             user_prompt += f"\n\nYOU MUST USE TOOL: {context['forced_tool']}"
+             user_prompt = f"""STEP INSTRUCTION:
+             
+    user_prompt += f"\n\nYOU MUST USE TOOL: {context['forced_tool']}"
 
-        user_prompt = f"""STEP INSTRUCTION:
     {instruction}
     {context_str}
 

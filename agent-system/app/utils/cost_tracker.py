@@ -18,7 +18,9 @@ class LLMCall:
     duration_ms: float
     tokens_estimated: int  # Rough estimate based on response length
     purpose: str  # "reasoning", "planning", "execution", etc.
-
+    
+    def __post_init__(self):
+        self.timestamp=datetime.now().timestamp()
 
 @dataclass
 class TaskCost:
