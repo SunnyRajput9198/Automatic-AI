@@ -1,4 +1,3 @@
-
 import asyncio
 import uuid
 import structlog
@@ -7,6 +6,7 @@ from typing import Dict, Any
 import json
 import time
 from pathlib import Path
+
 from app.orchestrator.recovery_manager import RecoveryManager
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
@@ -26,7 +26,6 @@ from app.agents.search_decider import SearchDecider
 from app.agents.confidence_memory import ConfidenceMemory
 from app.utils.cost_tracker import global_cost_tracker
 from app.agents.memory.tool_failure_memory import ToolFailureMemory
-
 
 logger = structlog.get_logger()
 
@@ -63,21 +62,20 @@ def finalize_and_export(task_metrics: dict):
 
 async def execute_task_v3(task_id: str):
     """
-    🧠 WEEK 3 ORCHESTRATION with full cognitive pipeline.
-    
-    NEW FEATURES:
-    - Pre-planning reasoning (ReasonerAgent)
-    - Confidence-weighted memory (ConfidenceMemory)
-    - Smart search decisions (SearchDecider)
-    - Post-task reflection (ReflectionAgent)
-    - Cost tracking throughout
-    - Learning from every execution
+    Autonomous agent orchestration pipeline.
+
+    PHASES:
+    0a. Reasoning   - understand the task
+    0b. Coordination - route to specialist agents
+    1.  Memory      - recall similar past tasks
+    2.  Search      - decide if web search needed
+    3.  Planning    - break into executable steps
+    4.  Execution   - run each step with retry/recovery
+    5.  Reflection  - learn from the outcome
     """
-    
-    # Start cost tracking
+
     global_cost_tracker.start_task(task_id)
-    
-    # Metrics tracking
+
     task_metrics = {
         "task_id": task_id,
         "started_at": time.time(),
@@ -88,15 +86,17 @@ async def execute_task_v3(task_id: str):
         "step_traces": [],
         "memories_used": [],
         "created_files": [],
-        # Week 3 metrics
         "reasoning_used": False,
         "search_decision": None,
         "reflection_generated": False,
         "confidence_updates": 0,
     }
-    
+
     logger.info("orchestrator_v3_started", task_id=task_id)
-    # Initialize agents
+
+    # FIX: agent_switcher must be accessible in Phase 4
+    # Previously it was initialised inside Phase 0's try block,
+    # so if Phase 0 crashed, Phase 4 would crash with NameError
     reasoner = ReasonerAgent()
     planner = PlannerAgent()
     executor = ExecutorAgent()
@@ -106,28 +106,35 @@ async def execute_task_v3(task_id: str):
     search_decider = SearchDecider()
     recovery_manager = RecoveryManager()
     agent_pref_memory = AgentPreferenceMemory()
+
+    WEEK4_AGENTS = {
+        "researcher": ResearcherAgent(),
+        "engineer": EngineerAgent(),
+        "writer": WriterAgent()
+    }
+    coordinator = CoordinatorAgent(WEEK4_AGENTS)
+    agent_switcher = AgentSwitcher(WEEK4_AGENTS)   # FIX: moved here from inside try block
+
     reasoning_output = None
-    reflection_output = None
-    new_agent = None
+    should_search = False
+
     try:
         with get_db_context() as db:
-            # Load task
+
             task = db.query(Task).filter(Task.id == task_id).first()
             if not task:
                 logger.error("orchestrator_task_not_found", task_id=task_id)
                 return
-            context: Dict[str, Any] = {
-            "task_description": task.user_input
-               }
 
-            # Update status
+            context: Dict[str, Any] = {
+                "task_description": task.user_input
+            }
+
             task.status = TaskStatus.RUNNING
             db.commit()
-            
-            # Initialize confidence memory
+
             conf_memory = ConfidenceMemory(db=db)
-            
-            # Create task context
+
             task_context = TaskContext(
                 id=str(uuid.uuid4()),
                 task_id=task_id,
@@ -137,19 +144,19 @@ async def execute_task_v3(task_id: str):
             )
             db.add(task_context)
             db.commit()
-            
+
             # ================================================================
-            # PHASE 0: REASONING (NEW - Week 3 Day 1)
+            # PHASE 0a: REASONING
             # ================================================================
             logger.info("orchestrator_reasoning_phase", task=task.user_input)
-            
+
             try:
                 start_time = time.time()
                 reasoning_output = await reasoner.reason(
                     task_description=task.user_input
                 )
                 duration_ms = (time.time() - start_time) * 1000
-                
+
                 global_cost_tracker.record_llm_call(
                     agent="reasoner",
                     model=reasoner.model,
@@ -157,7 +164,7 @@ async def execute_task_v3(task_id: str):
                     purpose="reasoning",
                     duration_ms=duration_ms
                 )
-                
+
                 task_metrics["reasoning_used"] = True
                 task_metrics["reasoning_output"] = {
                     "problem_type": reasoning_output.problem_type,
@@ -165,91 +172,89 @@ async def execute_task_v3(task_id: str):
                     "needs_search": reasoning_output.needs_search,
                     "needs_memory": reasoning_output.needs_memory
                 }
-                
+
                 logger.info(
                     "orchestrator_reasoning_completed",
                     problem_type=reasoning_output.problem_type,
                     confidence=reasoning_output.confidence,
                     strategy=reasoning_output.strategy
                 )
-                # ================================================================
-# WEEK 4: MULTI-AGENT COORDINATION (Day 4)
-# ================================================================
-                preferred_agent = agent_pref_memory.get_preferred_agent(task.user_input)
 
+            except Exception as e:
+                logger.error("orchestrator_reasoning_failed", error=str(e))
+                # Continue with reasoning_output = None
+
+            # ================================================================
+            # PHASE 0b: MULTI-AGENT COORDINATION
+            # FIX: separated from Phase 0a so a coordination crash
+            # doesn't log as "reasoning failed" — clearer error tracking
+            # ================================================================
+            try:
+                preferred_agent = agent_pref_memory.get_preferred_agent(task.user_input)
                 if preferred_agent:
                     context["preferred_agent"] = preferred_agent
+                    logger.info("preferred_agent_applied", agent=preferred_agent)
 
-                    logger.info(
-                        "preferred_agent_applied",
-                        agent=preferred_agent
-                    )
+                logger.info("orchestrator_coordination_phase")
 
-                logger.info("orchestrator_week4_coordination")
+                coordination_result = await coordinator.coordinate(
+                    task.user_input, context=context
+                )
 
-                WEEK4_AGENTS = {
-                                        "researcher": ResearcherAgent(),
-                                        "engineer": EngineerAgent(),
-                                        "writer": WriterAgent()
-                                    }
-                coordinator = CoordinatorAgent(WEEK4_AGENTS)
-                agent_switcher = AgentSwitcher(WEEK4_AGENTS)
-
-                coordination_result = await coordinator.coordinate(task.user_input, context=context)
-
-
-                # Store in context for planner/executor
                 context.update({
                     "reasoning": reasoning_output.dict() if reasoning_output else None,
                     "week4_output": coordination_result.final_output
                 })
 
-
                 task_metrics["week4_agents_used"] = coordination_result.total_agents
                 task_metrics["week4_successful_agents"] = coordination_result.successful_agents
 
-                
+                logger.info(
+                    "orchestrator_coordination_completed",
+                    agents_used=coordination_result.total_agents,
+                    successful=coordination_result.successful_agents
+                )
+
             except Exception as e:
-                logger.error("orchestrator_reasoning_failed", error=str(e))
-                # Continue without reasoning
-            
+                logger.error("orchestrator_coordination_failed", error=str(e))
+                # Continue without coordination output
+
             # ================================================================
-            # PHASE 1: MEMORY RECALL with Confidence (Week 3 Day 5)
+            # PHASE 1: MEMORY RECALL
             # ================================================================
             similar_memories = []
             memory_confidence = 0.0
-            
+
             if reasoning_output and reasoner.should_use_memory(reasoning_output):
                 logger.info("orchestrator_memory_phase")
-                
+
                 try:
                     similar_memories, memory_confidence = await conf_memory.recall_with_confidence(
                         task_description=task.user_input,
                         min_confidence=0.3,
                         limit=3
                     )
-                    
+
                     if similar_memories:
                         task_context.memories_used = [m["id"] for m in similar_memories]
                         task_metrics["memories_used"] = task_context.memories_used
                         task_metrics["memory_confidence"] = memory_confidence
                         db.commit()
-                        
+
                         logger.info(
                             "orchestrator_memories_recalled",
                             num_memories=len(similar_memories),
                             avg_confidence=memory_confidence
                         )
-                
+
                 except Exception as e:
                     logger.error("orchestrator_memory_failed", error=str(e))
-            
+
             # ================================================================
-            # PHASE 2: SEARCH DECISION (NEW - Week 3 Day 3)
+            # PHASE 2: SEARCH DECISION
             # ================================================================
-            should_search = False
             search_reason = ""
-            
+
             if reasoning_output:
                 should_search, search_reason = search_decider.should_search(
                     task_description=task.user_input,
@@ -257,28 +262,28 @@ async def execute_task_v3(task_id: str):
                     memory_confidence=memory_confidence if memory_confidence > 0 else None,
                     similar_memories=similar_memories
                 )
-                
+
                 task_metrics["search_decision"] = {
                     "should_search": should_search,
                     "reason": search_reason
                 }
-                
+
                 logger.info(
                     "orchestrator_search_decision",
                     should_search=should_search,
                     reason=search_reason
                 )
-            
+
             # ================================================================
-            # PHASE 3: PLANNING with Enhanced Context
+            # PHASE 3: PLANNING
             # ================================================================
             logger.info("orchestrator_planning")
-            
+
             try:
                 start_time = time.time()
                 plan = await planner.plan(task.user_input)
                 duration_ms = (time.time() - start_time) * 1000
-                
+
                 global_cost_tracker.record_llm_call(
                     agent="planner",
                     model=planner.model,
@@ -286,7 +291,7 @@ async def execute_task_v3(task_id: str):
                     purpose="planning",
                     duration_ms=duration_ms
                 )
-                
+
             except Exception as e:
                 logger.error("orchestrator_planning_failed", error=str(e))
                 task.status = TaskStatus.FAILED
@@ -300,8 +305,7 @@ async def execute_task_v3(task_id: str):
                 finalize_and_export(task_metrics)
                 global_cost_tracker.complete_task(success=False)
                 return
-            
-            # Create step records
+
             for step_data in plan:
                 step = Step(
                     id=str(uuid.uuid4()),
@@ -312,54 +316,48 @@ async def execute_task_v3(task_id: str):
                 )
                 db.add(step)
                 global_cost_tracker.record_step()
-            
+
             db.commit()
-            
+
             logger.info("orchestrator_plan_created", num_steps=len(plan))
             task_metrics["total_steps"] = len(plan)
-            
+
             # ================================================================
-            # PHASE 4: EXECUTION with Full Context
+            # PHASE 4: EXECUTION
             # ================================================================
             context.update({
                 "memories": similar_memories,
                 "should_search": should_search
             })
 
-            
             for step_data in plan:
                 step_number = step_data["step"]
-                
-                # Load step from DB
+
                 step = db.query(Step).filter(
                     Step.task_id == task_id,
                     Step.step_number == step_number
                 ).first()
-                
+
                 if not step:
                     logger.error("orchestrator_step_not_found", step_number=step_number)
                     continue
-                
+
                 logger.info("orchestrator_executing_step", step_number=step_number)
-                
-                # Retry loop
+
                 max_retries = 2
                 retry_count = 0
                 step_succeeded = False
-                
+
                 while retry_count < max_retries and not step_succeeded:
                     step.status = StepStatus.RUNNING
                     step.retry_count = retry_count
                     db.commit()
-                    
-                    # Execute step
+
                     try:
                         avoid_tools = []
-
                         for tool in ["python_executor", "shell_executor"]:
                             if tool_failure_memory.should_avoid(tool):
                                 avoid_tools.append(tool)
-
                         context["avoid_tools"] = avoid_tools
 
                         start_time = time.time()
@@ -368,7 +366,7 @@ async def execute_task_v3(task_id: str):
                             context=context
                         )
                         duration_ms = (time.time() - start_time) * 1000
-                        
+
                         global_cost_tracker.record_llm_call(
                             agent="executor",
                             model=executor.model,
@@ -376,29 +374,27 @@ async def execute_task_v3(task_id: str):
                             purpose="execution",
                             duration_ms=duration_ms
                         )
-                        
-                        # Track search if used
+
                         if tool_result.metadata and tool_result.metadata.get("tool_name") == "web_search":
                             global_cost_tracker.record_search()
-                        
-                        # Store result
+
                         step.result = tool_result.output
                         step.error = tool_result.error
                         step.tool_name = tool_result.metadata.get("tool_name") if tool_result.metadata else None
                         db.commit()
-                        
+
                         logger.info(
                             "orchestrator_step_executed",
                             step_number=step_number,
                             success=tool_result.success
                         )
+
                         if not tool_result.success:
                             if tool_result.metadata and tool_result.metadata.get("tool_name"):
                                 tool_failure_memory.record_failure(
                                     tool_result.metadata["tool_name"]
                                 )
 
-                        # Critic evaluation
                         start_time = time.time()
                         evaluation = await critic.evaluate(
                             step_instruction=step.instruction,
@@ -406,7 +402,7 @@ async def execute_task_v3(task_id: str):
                             retry_count=retry_count
                         )
                         duration_ms = (time.time() - start_time) * 1000
-                        
+
                         global_cost_tracker.record_llm_call(
                             agent="critic",
                             model=critic.model,
@@ -414,15 +410,14 @@ async def execute_task_v3(task_id: str):
                             purpose="critic",
                             duration_ms=duration_ms
                         )
-                        
+
                         logger.info(
                             "orchestrator_step_evaluated",
                             step_number=step_number,
                             verdict=evaluation.verdict,
                             reason=evaluation.reason
                         )
-                        
-                        # Track step trace
+
                         task_metrics["step_traces"].append({
                             "step_number": step_number,
                             "attempt": retry_count,
@@ -433,40 +428,41 @@ async def execute_task_v3(task_id: str):
                             "reason": evaluation.reason,
                             "timestamp": datetime.utcnow().isoformat(),
                         })
-                        
-                        # Handle verdict
+
+                        # ── PASS ──────────────────────────────────────────
                         if evaluation.verdict == Verdict.PASS:
                             task_metrics["completed_steps"] += 1
                             step.status = StepStatus.COMPLETED
                             step.completed_at = datetime.utcnow()
                             step_succeeded = True
-                            
-                            # Add output to context
+
                             context[f"step_{step_number}_output"] = tool_result.output
                             context[f"step_{step_number}_success"] = True
-                            
-                            # Track created files
+
                             if tool_result.metadata.get("filename"):
                                 filename = tool_result.metadata["filename"]
                                 if filename not in task_context.created_files:
                                     task_context.created_files.append(filename)
                                     task_metrics["created_files"].append(filename)
 
+                        # ── RETRY ─────────────────────────────────────────
                         elif evaluation.verdict == Verdict.RETRY:
                             task_metrics["retries"] += 1
                             global_cost_tracker.record_retry()
                             step.status = StepStatus.RETRYING
                             retry_count += 1
-                            
+
                             logger.warning(
                                 "orchestrator_step_retrying",
                                 step_number=step_number,
                                 retry_count=retry_count,
                                 suggestions=evaluation.suggestions
                             )
-                            
+
                             await asyncio.sleep(1)
-                        else:  # FAIL
+
+                        # ── FAIL ──────────────────────────────────────────
+                        else:
                             logger.error(
                                 "orchestrator_step_failed",
                                 step_number=step_number,
@@ -474,7 +470,6 @@ async def execute_task_v3(task_id: str):
                             )
 
                             reflection_output = None
-
                             try:
                                 reflection_output = await reflection_agent.reflect(
                                     task=task,
@@ -484,22 +479,8 @@ async def execute_task_v3(task_id: str):
                             except Exception as e:
                                 logger.error("reflection_failed", error=str(e))
 
-                            # 🧠 RECOVERY DECISION
                             if reflection_output:
                                 decision = recovery_manager.decide(reflection_output.dict())
-                                if decision.action not in {
-                                    "retry",
-                                    "retry_with_smaller_prompt",
-                                    "switch_agent",
-                                    "skip_step",
-                                    "abort_task"
-                                }:
-                                    logger.warning(
-                                        "invalid_recovery_action",
-                                        action=decision.action,
-                                        fallback="retry"
-                                    )
-                                    decision.action = "retry"
 
                                 logger.info(
                                     "recovery_attempt",
@@ -537,15 +518,13 @@ async def execute_task_v3(task_id: str):
                                             step=step_number,
                                             agent=new_agent
                                         )
-                                      
+
                                         step_succeeded = True
                                         agent_pref_memory.record_success(
                                             task_description=task.user_input,
                                             agent_name=new_agent
                                         )
-
-
-
+                                        db.commit()
                                         break
 
                                 if decision.action == "skip_step":
@@ -562,111 +541,99 @@ async def execute_task_v3(task_id: str):
                                     global_cost_tracker.complete_task(success=False)
                                     return
 
-
-                            # fallback = hard fail
+                            # FIX: hard fail path was missing finalize_and_export
+                            # and complete_task — trace file was never written
+                            # and cost tracker was left open for this failure case
                             step.status = StepStatus.FAILED
                             task.status = TaskStatus.FAILED
-                            task.error_message = f"Step {step_number} failed"
+                            task.error_message = f"Step {step_number} failed: {evaluation.reason}"
                             task.completed_at = datetime.utcnow()
+                            task_metrics["failures"].append({
+                                "step_number": step_number,
+                                "error": evaluation.reason,
+                                "category": classify_failure(step.error),
+                            })
                             db.commit()
+                            finalize_and_export(task_metrics)                    # FIX
+                            global_cost_tracker.complete_task(success=False)     # FIX
                             return
-                            
-                        
+
                         db.commit()
-                    
+
                     except Exception as e:
                         logger.error(
                             "orchestrator_step_error",
                             step_number=step_number,
                             error=str(e)
                         )
-                        
+
                         step.error = str(e)
                         step.status = StepStatus.FAILED
                         db.commit()
-                        
+
                         task.status = TaskStatus.FAILED
                         task.error_message = f"Step {step_number} crashed: {str(e)}"
                         task.completed_at = datetime.utcnow()
-                        
+
                         task_metrics["failures"].append({
                             "step_number": step_number,
                             "error": str(e),
                             "category": "ORCHESTRATOR_ERROR",
                         })
-                        
+
                         db.commit()
                         finalize_and_export(task_metrics)
                         global_cost_tracker.complete_task(success=False)
                         return
-                
-                # Check retry exhaustion
+
                 if not step_succeeded:
                     logger.error(
                         "orchestrator_step_exhausted_retries",
                         step_number=step_number
                     )
-                    
+
                     step.status = StepStatus.FAILED
                     task.status = TaskStatus.FAILED
                     task.error_message = f"Step {step_number} exhausted retries"
                     task.completed_at = datetime.utcnow()
-                    
+
                     task_metrics["failures"].append({
                         "step_number": step_number,
                         "error": "Exhausted retries",
                         "category": "RETRY_LIMIT_EXCEEDED",
                     })
-                    
+
                     db.commit()
                     finalize_and_export(task_metrics)
                     global_cost_tracker.complete_task(success=False)
                     return
-            
+
             # ================================================================
-            # PHASE 5: SUCCESS - REFLECTION & LEARNING (NEW - Week 3 Day 4)
+            # PHASE 5: REFLECTION & LEARNING
             # ================================================================
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.utcnow()
-            
             task_context.context_data = context
             db.commit()
-            
+
             logger.info("orchestrator_task_completed", task_id=task_id)
-            # ====================================================
-            # 🧠 DAY 5: AGENT PREFERENCE LEARNING
-            # ====================================================
 
+            # FIX: removed duplicate agent_pref_memory.record_success that
+            # was also firing inside the PASS verdict block — was double-counting
             try:
-                if reasoning_output:
-                    task_type = reasoning_output.problem_type
-                else:
-                    task_type = "general"
-
-                # pick best agent used
-                best_agent = None
-
-                if "recovered_by_agent" in context:
-                    best_agent = context["recovered_by_agent"]
-                else:
-                    # default executor success
-                    best_agent = "executor"
+                best_agent = context.get("recovered_by_agent", "executor")
                 agent_pref_memory.record_success(
                     task_description=task.user_input,
                     agent_name=best_agent
                 )
-
                 logger.info(
                     "agent_preference_learned",
-                    task_type=task_type,
+                    task_type=reasoning_output.problem_type if reasoning_output else "general",
                     agent=best_agent
                 )
-
-
             except Exception as e:
                 logger.error("agent_preference_update_failed", error=str(e))
 
-            # Generate reflection
             try:
                 start_time = time.time()
                 reflection_output = await reflection_agent.reflect(
@@ -675,7 +642,7 @@ async def execute_task_v3(task_id: str):
                     search_used=should_search
                 )
                 duration_ms = (time.time() - start_time) * 1000
-                
+
                 global_cost_tracker.record_llm_call(
                     agent="reflection",
                     model=reflection_agent.model,
@@ -683,32 +650,30 @@ async def execute_task_v3(task_id: str):
                     purpose="reflection",
                     duration_ms=duration_ms
                 )
-                
+
                 task_metrics["reflection_generated"] = True
                 task_metrics["reflection_lessons"] = reflection_output.lessons
                 task_metrics["pattern_quality"] = reflection_output.pattern_quality
-                
+
                 logger.info(
                     "orchestrator_reflection_completed",
                     num_lessons=len(reflection_output.lessons),
                     quality=reflection_output.pattern_quality
                 )
-                
-                # Update confidence scores
+
                 await conf_memory.update_confidence_from_reflection(
                     reflection=reflection_output,
                     task_pattern=reasoning_output.problem_type if reasoning_output else "general"
                 )
                 task_metrics["confidence_updates"] = len(reflection_output.confidence_updates)
-                
-                # Store in memory with confidence
+
                 memory_id = await conf_memory.store_with_confidence(
                     pattern_type="success",
                     task_pattern=reasoning_output.problem_type if reasoning_output else "general",
                     task_id=task.id,
                     task_description=task.user_input,
                     strategy=reflection_output.lessons[0] if reflection_output.lessons else "Completed successfully",
-                    tools_used=list(set(step.tool_name for step in task.steps if step.tool_name)),
+                    tools_used=list(set(s.tool_name for s in task.steps if s.tool_name)),
                     steps_taken=[{
                         "step": s.step_number,
                         "instruction": s.instruction,
@@ -718,26 +683,25 @@ async def execute_task_v3(task_id: str):
                     success=True,
                     reflection=reflection_output
                 )
-                
+
                 logger.info("orchestrator_learned", memory_id=memory_id)
-                
+
             except Exception as e:
                 logger.error("orchestrator_reflection_failed", error=str(e))
-            
+
             finalize_and_export(task_metrics)
             global_cost_tracker.complete_task(success=True)
-            
             logger.info("orchestrator_v3_completed", task_id=task_id)
-    
+
     except Exception as e:
         logger.error("orchestrator_v3_error", task_id=task_id, error=str(e))
-        
+
         task_metrics["failures"].append({
             "step_number": None,
             "error": str(e),
             "category": "ORCHESTRATOR_CRASH",
         })
-        
+
         with get_db_context() as db:
             task = db.query(Task).filter(Task.id == task_id).first()
             if task:
@@ -745,6 +709,6 @@ async def execute_task_v3(task_id: str):
                 task.error_message = f"Orchestrator error: {str(e)}"
                 task.completed_at = datetime.utcnow()
                 db.commit()
-        
+
         finalize_and_export(task_metrics)
         global_cost_tracker.complete_task(success=False)

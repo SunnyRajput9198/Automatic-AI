@@ -1,5 +1,56 @@
+# Environment
 .env
-../.venv/
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+../.venv/
+venv/
+.venv/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Task outputs (runtime generated)
 traces/
+costs/
+evaluation_results/
+
+# Workspace (user data, not code)
+agent-system/workspace/shared/
+agent-system/sandbox/
+
+# Docker
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Next.js
+Frontend/.next/
+Frontend/node_modules/
+Frontend/.env.local
+Frontend/out/
+
+# Build
+dist/
+build/
+*.egg-info/

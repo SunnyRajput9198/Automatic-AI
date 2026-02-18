@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgresql+psycopg://agent:agent_password@postgres:5432/agent_system
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       WORKSPACE_DIR: /app/workspace
+      SHARED_WORKSPACE: /app/workspace/shared
       ENABLE_SHELL: "false"
       ENABLE_PYTHON_EXECUTOR: "true"
       SANDBOX_DIR: /app/sandbox
@@ -34,7 +35,9 @@ services:
     volumes:
       - ./workspace:/app/workspace      
       - ./sandbox:/app/sandbox           
-      - ./traces:/app/traces             
+      - ./traces:/app/traces      
+      - ./costs:/app/costs
+      - ./evaluation_results:/app/evaluation_results   # ← add this       
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 
 
 volumes:

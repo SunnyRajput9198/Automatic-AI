@@ -143,9 +143,9 @@ class Week3Evaluator:
                     if first_run["duration_sec"] > 0 else 0,
                     1
                 ),
-                "retry_reduction": first_run.get("total_retries", 0) - last_run.get("total_retries", 0),
-                "search_reduction": first_run.get("search_operations", 0) - last_run.get("search_operations", 0),
-                "llm_call_reduction": first_run.get("llm_calls", 0) - last_run.get("llm_calls", 0)
+               "retry_reduction": max(0, first_run.get("total_retries", 0) - last_run.get("total_retries", 0)),
+               "search_reduction": max(0, first_run.get("search_operations", 0) - last_run.get("search_operations", 0)),
+               "llm_call_reduction": max(0, first_run.get("llm_calls", 0) - last_run.get("llm_calls", 0)),
             }
         
         # Save results
@@ -235,7 +235,6 @@ class Week3Evaluator:
 
 
 # Global evaluator instance
-week3_evaluator = Week3Evaluator()
 
 
 # Standalone test function
@@ -263,3 +262,4 @@ async def test_week3_evaluation():
 
 if __name__ == "__main__":
     asyncio.run(test_week3_evaluation())
+    week3_evaluator = Week3Evaluator()

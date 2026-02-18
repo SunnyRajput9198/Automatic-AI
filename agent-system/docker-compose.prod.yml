@@ -8,23 +8,37 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agent"]
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent_system"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg2://agent:agent_password@postgres:5432/agent_system
+      DATABASE_URL: postgresql+psycopg://agent:agent_password@postgres:5432/agent_system
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       WORKSPACE_DIR: /app/workspace
+      SHARED_WORKSPACE: /app/workspace/shared
       SANDBOX_DIR: /app/sandbox
+      ENABLE_SHELL: "false"
+      ENABLE_PYTHON_EXECUTOR: "true"
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - workspace_data:/app/workspace
+      - traces_data:/app/traces
+      - costs_data:/app/costs
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  workspace_data:
+  traces_data:
+  costs_data:

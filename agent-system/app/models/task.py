@@ -2,9 +2,7 @@ from datetime import datetime
 from enum import Enum
 from sqlalchemy import Column, String, DateTime, Integer, Text, ForeignKey, JSON
 from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
-
-Base = declarative_base()
+from app.db.base import Base
 
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
