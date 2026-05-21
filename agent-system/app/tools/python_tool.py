@@ -60,7 +60,7 @@ class PythonExecutor(Tool):
         # Sandbox directory for temporary script files only
         sandbox_dir = os.getenv("SANDBOX_DIR", "/app/sandbox")
         os.makedirs(sandbox_dir, exist_ok=True)
-        
+        temp_file = ""
         try:
             # Write code to temporary file in sandbox
             with tempfile.NamedTemporaryFile(

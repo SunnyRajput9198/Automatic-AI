@@ -3,6 +3,7 @@ import asyncio
 import structlog
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
+from anthropic.types import TextBlock  # add this import
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -100,13 +101,8 @@ def _sync_claude_call(
     temperature: float,
     max_tokens: int,
 ) -> str:
-    """
-    Blocking Claude call
-    """
     system_prompt, anthropic_messages = _convert_messages(messages)
 
-    # CRITICAL FIX: Handle None system prompt properly
-    # If no system prompt, just don't include it in the API call
     if system_prompt is not None:
         response = _client.messages.create(
             model=model,
@@ -123,9 +119,12 @@ def _sync_claude_call(
             max_tokens=max_tokens,
         )
 
-    return response.content[0].text
+    for block in response.content:
+        if isinstance(block, TextBlock):
+            return block.text
 
-
+    raise ValueError("No TextBlock found in Claude response")
+    # remove the old: return response.content[0].text
 # -------------------------------
 # Public Async API
 # -------------------------------

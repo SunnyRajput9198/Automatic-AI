@@ -113,7 +113,7 @@ class WebSearchTool(Tool):
                     
                     if title_elem:
                         title = title_elem.get_text(strip=True)
-                        raw_url = title_elem.get('href', '')
+                        raw_url = str(title_elem.get('href', '') or '')
                         url = self._extract_url(raw_url) if raw_url else ""
                         snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
                         

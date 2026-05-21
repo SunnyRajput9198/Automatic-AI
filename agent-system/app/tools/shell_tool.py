@@ -1,36 +1,40 @@
 import subprocess
 import os
 import structlog
-from typing import Dict, Any, List
+from typing import Any, Dict
 
 from app.tools.base import Tool, ToolResult
 
 logger = structlog.get_logger()
 
+
 class ShellExecutor(Tool):
     """
-    Execute safe shell commands.
-    
-    SECURITY:
-    - Whitelist of allowed commands
-    - Timeout protection
-    - Working directory isolation
+    Execute a whitelisted subset of shell commands in the shared workspace.
+
+    Security model:
+    - Only commands in ALLOWED_COMMANDS can run (checked on the base word).
+    - Execution is capped at 30 seconds.
+    - Working directory is set to the shared workspace so file operations
+      land in the right place.
     """
-    
-    # Whitelist of safe commands
+
     ALLOWED_COMMANDS = {
         "ls", "pwd", "cat", "grep", "find", "wc", "head", "tail",
-        "echo", "mkdir", "touch", "cp", "mv", "tree", "du", "df"
+        "echo", "mkdir", "touch", "cp", "mv", "tree", "du", "df",
     }
-    
+
     @property
     def name(self) -> str:
         return "shell_executor"
-    
+
     @property
     def description(self) -> str:
-        return f"Execute safe shell commands. Allowed: {', '.join(self.ALLOWED_COMMANDS)}"
-    
+        return (
+            "Execute safe shell commands. "
+            f"Allowed: {', '.join(sorted(self.ALLOWED_COMMANDS))}"
+        )
+
     @property
     def input_schema(self) -> Dict[str, Any]:
         return {
@@ -38,64 +42,59 @@ class ShellExecutor(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Shell command to execute"
+                    "description": "Shell command to execute",
                 }
             },
-            "required": ["command"]
+            "required": ["command"],
         }
-    
+
     def _is_command_safe(self, command: str) -> bool:
-        """Check if command is in whitelist"""
         parts = command.strip().split()
-        if not parts:
-            return False
-        
-        base_command = parts[0]
-        return base_command in self.ALLOWED_COMMANDS
-    
-    async def run(self, **kwargs) -> ToolResult:
-        """Execute shell command safely"""
-        command = kwargs.get("command", "")
-        
+        return bool(parts) and parts[0] in self.ALLOWED_COMMANDS
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        command: str = kwargs.get("command", "")
+
         if not command.strip():
-            return ToolResult(
-                success=False,
-                output="",
-                error="No command provided"
-            )
-         
-        # Security check
+            return ToolResult(success=False, output="", error="No command provided")
+
         if not self._is_command_safe(command):
             base_cmd = command.split()[0] if command.split() else ""
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Command '{base_cmd}' not allowed. Allowed: {', '.join(self.ALLOWED_COMMANDS)}"
+                error=(
+                    f"Command '{base_cmd}' not allowed. "
+                    f"Allowed: {', '.join(sorted(self.ALLOWED_COMMANDS))}"
+                ),
             )
-        
+
         logger.info("shell_executor_running", command=command)
-        
-        sandbox_dir = os.getenv("SANDBOX_DIR", "/app/sandbox")
-        os.makedirs(sandbox_dir, exist_ok=True)
-        
+
+        # FIX: removed trailing comma that made shared_workspace a tuple.
+        # Was:  shared_workspace = os.getenv(...),   →  type: tuple[str]
+        # Now:  shared_workspace = os.getenv(...)    →  type: str
+        # The tuple caused subprocess.run(cwd=...) and os.makedirs(...) to
+        # receive a tuple instead of a str, triggering "No overloads match".
+        shared_workspace: str = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared")
+        os.makedirs(shared_workspace, exist_ok=True)
+
         try:
-            shared_workspace = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared"),
-            os.makedirs(shared_workspace, exist_ok=True)
             result = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=30,
-                cwd=shared_workspace  # Isolate in shared workspace
-                )
-            
+                cwd=shared_workspace,
+            )
+
             if result.returncode == 0:
                 logger.info("shell_executor_success", output_length=len(result.stdout))
                 return ToolResult(
                     success=True,
                     output=result.stdout,
-                    metadata={"return_code": 0}
+                    metadata={"return_code": 0},
                 )
             else:
                 logger.warning("shell_executor_failed", error=result.stderr)
@@ -103,21 +102,21 @@ class ShellExecutor(Tool):
                     success=False,
                     output=result.stdout,
                     error=result.stderr,
-                    metadata={"return_code": result.returncode}
+                    metadata={"return_code": result.returncode},
                 )
-        
+
         except subprocess.TimeoutExpired:
             logger.error("shell_executor_timeout")
             return ToolResult(
                 success=False,
                 output="",
-                error="Command timed out after 30 seconds"
+                error="Command timed out after 30 seconds",
             )
-        
+
         except Exception as e:
             logger.error("shell_executor_error", error=str(e))
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Execution error: {str(e)}"
+                error=f"Execution error: {str(e)}",
             )

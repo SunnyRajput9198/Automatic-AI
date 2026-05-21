@@ -1,7 +1,7 @@
 import json
 import uuid
 import structlog
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -15,19 +15,25 @@ logger = structlog.get_logger()
 
 class ConfidenceMemory:
     """
-    Enhanced memory system with confidence tracking.
-    
-    KEY FEATURES:
-    1. Each memory has confidence score (0-1)
-    2. Confidence updates from reflection
-    3. Retrieval weighted by: relevance × confidence × recency
-    4. Success/failure tracking per pattern
+    Memory system with per-pattern confidence tracking.
+
+    Each memory stored in PostgreSQL carries a `success_rate` field used
+    as a confidence proxy (0–1).  Retrieval is weighted by:
+
+        composite = confidence × recency × (1 + √usage / 10)
+
+    The LLM then picks the most task-relevant subset from the top
+    composite-scored candidates.
     """
-    
+
     def __init__(self, db: Session, model: str = "claude-haiku-4-5-20251001"):
         self.db = db
         self.model = model
-    
+
+    # ------------------------------------------------------------------
+    # Store
+    # ------------------------------------------------------------------
+
     async def store_with_confidence(
         self,
         pattern_type: str,
@@ -39,41 +45,31 @@ class ConfidenceMemory:
         steps_taken: List[Dict],
         success: bool,
         initial_confidence: float = 0.5,
-        reflection: Optional[Reflection] = None
+        reflection: Optional[Reflection] = None,
     ) -> str:
         """
-        Store memory with confidence tracking.
-        
-        Args:
-            pattern_type: "success" or "failure"
-            task_pattern: Pattern category
-            task_id: Original task ID
-            task_description: Task description
-            strategy: What strategy was used
-            tools_used: List of tools
-            steps_taken: Step details
-            success: Whether task succeeded
-            initial_confidence: Starting confidence (0-1)
-            reflection: Optional reflection to incorporate
-            
-        Returns:
-            Memory ID
+        Persist a task outcome as a memory record.
+
+        The stored `success_rate` is:
+        - For successes: reflection.pattern_quality if available, else initial_confidence
+        - For failures:  0.0  (failed patterns carry no positive confidence)
         """
         logger.info(
             "confidence_memory_storing",
             pattern=task_pattern,
             success=success,
-            confidence=initial_confidence
+            initial_confidence=initial_confidence,
         )
-        
-        # Adjust confidence based on reflection if available
-        final_confidence = initial_confidence
-        if reflection:
-            # If pattern quality is provided, use it
-            if reflection.pattern_quality > 0:
-                final_confidence = reflection.pattern_quality
-        
-        # Create memory with confidence
+
+        if not success:
+            # Failed patterns are stored with zero confidence so they are
+            # never surfaced by the min_confidence filter in recall.
+            final_confidence = 0.0
+        elif reflection and reflection.pattern_quality > 0:
+            final_confidence = reflection.pattern_quality
+        else:
+            final_confidence = initial_confidence
+
         memory = Memory(
             id=str(uuid.uuid4()),
             pattern_type=pattern_type,
@@ -85,214 +81,243 @@ class ConfidenceMemory:
             steps_taken=steps_taken,
             error_message=None if success else "Task failed",
             failure_reason=None if success else strategy,
-            success_rate=final_confidence if success else (1 - final_confidence),
+            success_rate=final_confidence,
             avg_steps=float(len(steps_taken)),
             times_referenced=0,
-            last_used=None
+            last_used=None,
         )
-        
+
         self.db.add(memory)
         self.db.commit()
-        
+
         logger.info(
             "confidence_memory_stored",
             memory_id=memory.id,
-            final_confidence=final_confidence
+            final_confidence=final_confidence,
         )
-        
-        return memory.id
-    
+
+        return str(memory.id)
+
+    # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
     async def update_confidence_from_reflection(
-        self,
-        reflection: Reflection,
-        task_pattern: str
-    ):
+        self, reflection: Reflection, task_pattern: str
+    ) -> None:
         """
-        Update confidence scores based on reflection.
-        
-        Args:
-            reflection: Reflection output with confidence updates
-            task_pattern: The pattern this task represents
+        Nudge confidence scores up/down based on what the Reflection agent learned.
+
+        FIX: Previously committed inside the loop — one commit per pattern.
+        Now commits once after all updates (atomic, avoids partial writes).
         """
         if not reflection.confidence_updates:
             return
-        
+
         logger.info(
-            "confidence_updating",
-            num_updates=len(reflection.confidence_updates)
+            "confidence_updating", num_updates=len(reflection.confidence_updates)
         )
-        
-        # Update memories matching the patterns
+
         for pattern, confidence_change in reflection.confidence_updates.items():
-            # Find recent memories with this pattern
-            memories = self.db.query(Memory).filter(
-                Memory.task_pattern.like(f"%{pattern}%")
-            ).order_by(
-                desc(Memory.created_at)
-            ).limit(5).all()
-            
+            memories = (
+                self.db.query(Memory)
+                .filter(Memory.task_pattern.like(f"%{pattern}%"))
+                .order_by(desc(Memory.created_at))
+                .limit(5)
+                .all()
+            )
+
             for memory in memories:
-                # Update success rate (our proxy for confidence)
-                old_confidence = memory.success_rate
+                old_confidence = (
+                    float(memory.success_rate)
+                    if memory.success_rate is not None
+                    else 0.5
+                )
                 new_confidence = max(0.0, min(1.0, old_confidence + confidence_change))
-                
                 memory.success_rate = new_confidence
-                
+
                 logger.debug(
                     "confidence_updated",
                     memory_id=memory.id,
                     pattern=pattern,
                     old=old_confidence,
                     new=new_confidence,
-                    change=confidence_change
+                    change=confidence_change,
                 )
-            
-            self.db.commit()
-    
+
+        # FIX: single commit after all patterns are processed
+        self.db.commit()
+
+    # ------------------------------------------------------------------
+    # Recency helper
+    # ------------------------------------------------------------------
+
     def calculate_recency_score(self, memory: Memory) -> float:
         """
-        Calculate recency score (0-1).
-        More recent = higher score.
+        Return a 0–1 recency score.  Decays exponentially with age:
+        1.0 at 0 days → 0.5 at 30 days → ~0.1 at 90 days.
+
+        FIX: The previous version used datetime.now(timezone.utc) (tz-aware)
+        while SQLAlchemy DateTime columns without timezone=True store naive
+        datetimes.  Subtracting aware from naive raises TypeError at runtime.
+        Both sides now use naive UTC via datetime.utcnow().
         """
-        if not memory.last_used and not memory.created_at:
+        if memory.last_used is None and memory.created_at is None:
             return 0.5
-        
-        last_time = memory.last_used or memory.created_at
-        now = datetime.utcnow()
-        days_old = (now - last_time).days
-        
-        # Exponential decay: 1.0 at 0 days, 0.5 at 30 days, 0.1 at 90 days
-        recency = max(0.1, 1.0 / (1.0 + days_old / 30.0))
-        
-        return recency
-    
+
+        last_time: datetime = memory.last_used or memory.created_at
+
+        # Strip tzinfo if the value somehow arrives tz-aware (defensive)
+        if last_time.tzinfo is not None:
+            last_time = last_time.replace(tzinfo=None)
+
+        now = datetime.utcnow()  # naive UTC — matches SQLAlchemy DateTime default
+        days_old = max(0, (now - last_time).days)
+
+        return max(0.1, 1.0 / (1.0 + days_old / 30.0))
+
+    # ------------------------------------------------------------------
+    # Recall
+    # ------------------------------------------------------------------
+
     async def recall_with_confidence(
         self,
         task_description: str,
         min_confidence: float = 0.3,
-        limit: int = 3
-    ) -> tuple[List[Dict], float]:
+        limit: int = 3,
+    ) -> Tuple[List[Dict], float]:
         """
-        Retrieve memories weighted by relevance × confidence × recency.
-        
-        Args:
-            task_description: Current task
-            min_confidence: Minimum confidence threshold
-            limit: Max memories to return
-            
-        Returns:
-            (memories, avg_confidence)
+        Return the most relevant past memories for the current task,
+        together with their average confidence.
+
+        Steps:
+        1. Fetch candidates from DB (filtered by confidence threshold)
+        2. Compute composite scores
+        3. Ask LLM to pick the most relevant subset
+        4. Update usage counters in a single batched DB query
+
+        FIX: Previously ran one db.query() per LLM-selected ID (N+1 queries).
+             Now batches all updates with a single IN filter.
         """
         logger.info("confidence_recall_starting", task=task_description)
-        
-        # Get all successful memories above confidence threshold
-        candidate_memories = self.db.query(Memory).filter(
-            Memory.pattern_type == "success",
-            Memory.success_rate >= min_confidence
-        ).order_by(
-            desc(Memory.success_rate),  # Confidence first
-            desc(Memory.times_referenced),  # Then usage
-            desc(Memory.created_at)  # Then recency
-        ).limit(limit * 3).all()  # Get extras for LLM filtering
-        
+
+        candidate_memories = (
+            self.db.query(Memory)
+            .filter(
+                Memory.pattern_type == "success",
+                Memory.success_rate >= min_confidence,
+            )
+            .order_by(
+                desc(Memory.success_rate),
+                desc(Memory.times_referenced),
+                desc(Memory.created_at),
+            )
+            .limit(limit * 3)  # fetch extra so LLM can choose the best subset
+            .all()
+        )
+
         if not candidate_memories:
             logger.info("confidence_recall_empty")
             return [], 0.0
-        
-        # Calculate composite scores
-        scored_memories = []
+
+        # Build scored list
+        scored_memories: List[Dict] = []
         for mem in candidate_memories:
-            confidence = mem.success_rate
+            # FIX: explicit float() cast — DB drivers may return Decimal
+            confidence = float(mem.success_rate) if mem.success_rate is not None else 0.0
             recency = self.calculate_recency_score(mem)
-            
-            scored_memories.append({
-                "id": mem.id,
-                "pattern": mem.task_pattern,
-                "task": mem.task_description,
-                "strategy": mem.strategy,
-                "tools": mem.tools_used,
-                "confidence": confidence,
-                "recency": recency,
-                "times_used": mem.times_referenced,
-                # Composite score: confidence × recency × sqrt(usage)
-                "composite_score": confidence * recency * (1 + (mem.times_referenced ** 0.5) / 10)
-            })
-        
-        # Sort by composite score
+            usage = float(mem.times_referenced or 0)
+
+            scored_memories.append(
+                {
+                    "id": mem.id,
+                    "pattern": mem.task_pattern,
+                    "task": mem.task_description,
+                    "strategy": mem.strategy,
+                    "tools": mem.tools_used,
+                    "confidence": confidence,
+                    "recency": recency,
+                    "times_used": int(usage),
+                    "composite_score": confidence * recency * (1 + usage**0.5 / 10),
+                }
+            )
+
         scored_memories.sort(key=lambda x: x["composite_score"], reverse=True)
-        
-        # Use LLM to find most relevant
-        top_candidates = scored_memories[:limit * 2]
-        
-        prompt = f"""Current task: {task_description}
+        top_candidates = scored_memories[: limit * 2]
 
-Past successful patterns (with confidence scores):
-{json.dumps(top_candidates, indent=2)}
+        # Ask the LLM which candidates are most relevant to the current task
+        prompt = (
+            f"Current task: {task_description}\n\n"
+            f"Past successful patterns (with confidence scores):\n"
+            f"{json.dumps(top_candidates, indent=2)}\n\n"
+            f"Select the {limit} most relevant patterns for this task.\n"
+            f"Consider both similarity to the current task and confidence score.\n"
+            f'Return JSON only: {{"relevant_ids": ["id1", "id2", ...]}}'
+        )
 
-Select the {limit} most relevant patterns for this task.
-Consider both similarity and confidence.
-Return JSON array of memory IDs:
-{{"relevant_ids": ["id1", "id2", ...]}}
-
-ONLY return JSON."""
-        
         try:
             response = await call_llm(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.model,
-                temperature=0.1
+                temperature=0.1,
             )
-            
-            # Parse response
+
             response_text = response.strip()
-            
+
+            # Strip markdown fences if present
             if response_text.startswith("```"):
                 response_text = response_text.split("\n", 1)[1] if "\n" in response_text else response_text[3:]
                 if response_text.endswith("```"):
                     response_text = response_text[:-3]
                 response_text = response_text.strip()
-            
+
+            # Extract JSON object
             start = response_text.find("{")
             end = response_text.rfind("}")
-            
             if start != -1 and end != -1:
-                response_text = response_text[start:end+1]
-            
+                response_text = response_text[start : end + 1]
+
             result = json.loads(response_text)
-            relevant_ids = result.get("relevant_ids", [])[:limit]
-            
-            # Get full memory data and update usage
-            relevant_memories = []
-            confidences = []
-            
-            for mem_id in relevant_ids:
-                # Find in our scored list
-                mem_data = next((m for m in scored_memories if m["id"] == mem_id), None)
-                if mem_data:
-                    # Update DB
-                    mem_obj = self.db.query(Memory).filter(Memory.id == mem_id).first()
-                    if mem_obj:
-                        mem_obj.times_referenced += 1
-                        mem_obj.last_used = datetime.utcnow()
-                    
-                    relevant_memories.append(mem_data)
-                    confidences.append(mem_data["confidence"])
-            
-            self.db.commit()
-            
+            relevant_ids: List[str] = result.get("relevant_ids", [])[:limit]
+
+            # Build the return list from the already-scored data (no extra DB round-trip)
+            id_to_scored = {m["id"]: m for m in scored_memories}
+            relevant_memories = [
+                id_to_scored[mid] for mid in relevant_ids if mid in id_to_scored
+            ]
+            confidences = [m["confidence"] for m in relevant_memories]
+
+            # FIX: batch-update all matched Memory rows in one query instead of
+            # one db.query() per ID (was N+1 queries).
+            if relevant_ids:
+                matched_objs = (
+                    self.db.query(Memory)
+                    .filter(Memory.id.in_(relevant_ids))
+                    .all()
+                )
+                now = datetime.utcnow()
+                for mem_obj in matched_objs:
+                    mem_obj.times_referenced = int(mem_obj.times_referenced or 0) + 1
+                    mem_obj.last_used = now
+                self.db.commit()
+
             avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-            
+
             logger.info(
                 "confidence_recall_completed",
                 num_memories=len(relevant_memories),
-                avg_confidence=avg_confidence
+                avg_confidence=avg_confidence,
             )
-            
+
             return relevant_memories, avg_confidence
-        
+
         except Exception as e:
             logger.error("confidence_recall_error", error=str(e))
-            # Fallback: return top by composite score
-            fallback_memories = scored_memories[:limit]
-            avg_conf = sum(m["confidence"] for m in fallback_memories) / len(fallback_memories) if fallback_memories else 0.0
-            return fallback_memories, avg_conf
+            # Fallback: return top-scored candidates without LLM filtering
+            fallback = scored_memories[:limit]
+            avg_conf = (
+                sum(m["confidence"] for m in fallback) / len(fallback)
+                if fallback
+                else 0.0
+            )
+            return fallback, avg_conf

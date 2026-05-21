@@ -21,6 +21,7 @@ class Reflection(BaseModel):
     confidence_updates: Dict[str, float]  # Pattern -> confidence change
     improvement_suggestions: List[str]  # How to do better next time
     pattern_quality: float  # How reusable is this pattern (0-1)
+    suggested_action: Optional[str] = None  # ← borrow this idea
 
 
 class ReflectionAgent:
@@ -185,7 +186,7 @@ RESPOND ONLY WITH JSON."""
         
         # Calculate efficiency metrics
         duration_sec = None
-        if task.completed_at and task.created_at:
+        if task.completed_at is not None and task.created_at is not None:
             duration_sec = (task.completed_at - task.created_at).total_seconds()
         
         task_analysis = {
@@ -213,6 +214,7 @@ Reflect on this task execution:
 
 Be specific and actionable. Return JSON only."""
         
+        response_text = ""
         try:
             response = await call_llm(
                 messages=[
@@ -224,7 +226,7 @@ Be specific and actionable. Return JSON only."""
             )
             
             # Parse response
-            response_text = response.strip()
+            response_text = response.strip() if response else ""
             
             # Handle markdown code blocks
             if response_text.startswith("```"):

@@ -1,14 +1,16 @@
+
+
 import json
 import structlog
 from typing import Dict, Any
 from enum import Enum
-
 from app.utils.llm import call_llm
 from app.tools.base import ToolResult
 
 logger = structlog.get_logger()
 
-# This file answers one question after every step: "Did that work?" 
+
+# This file answers one question after every step: "Did that work?"
 # Three possible outcomes. str, Enum means these are both enum values AND strings, so they can be stored in the database as text without extra conversion.
 class Verdict(str, Enum):
     PASS = "PASS"
@@ -16,9 +18,10 @@ class Verdict(str, Enum):
     FAIL = "FAIL"
 
 
-# Simple container holding the verdict + why + what to try differently. 
+# Simple container holding the verdict + why + what to try differently.
 class CriticResult:
     """Result of critic evaluation"""
+
     def __init__(self, verdict: Verdict, reason: str, suggestions: str = ""):
         self.verdict = verdict
         self.reason = reason
@@ -109,7 +112,7 @@ TOOL EXECUTION:
 
 RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
 
-Evaluate if this step succeeded and return verdict JSON.
+   Evaluate if this step succeeded and return verdict JSON.
 """
 
         try:
@@ -158,9 +161,9 @@ Evaluate if this step succeeded and return verdict JSON.
         except json.JSONDecodeError as e:
             logger.error("critic_json_error", error=str(e))
             return CriticResult(
-                verdict=Verdict.RETRY
-                if retry_count < self.MAX_RETRIES
-                else Verdict.FAIL,
+                verdict=(
+                    Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL
+                ),
                 reason=f"Failed to parse evaluation JSON: {str(e)}",
                 suggestions="Ensure the response is valid JSON only",
             )
@@ -168,9 +171,9 @@ Evaluate if this step succeeded and return verdict JSON.
         except Exception as e:
             logger.error("critic_error", error=str(e))
             return CriticResult(
-                verdict=Verdict.RETRY
-                if retry_count < self.MAX_RETRIES
-                else Verdict.FAIL,
+                verdict=(
+                    Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL
+                ),
                 reason=f"Evaluation error: {str(e)}",
                 suggestions="",
             )

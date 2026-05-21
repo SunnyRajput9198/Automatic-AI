@@ -134,7 +134,7 @@ RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
 Break this down into concrete, executable steps.
 Return JSON only.
 """
-
+        response=""
         try:
             response = await call_llm(
                 messages=[

@@ -84,75 +84,50 @@ class CoordinatorAgent:
         # 🔥 DAY 3: PARALLEL EXECUTION
         # ==================================================
         if routing.execution_mode == "parallel":
-
             logger.info("coordinator_parallel_execution")
 
-            coroutines = []
-            roles = []
+        coroutines = []
+        roles = []
 
-            for agent_role in routing.agents_needed:
-                agent = self.available_agents.get(agent_role)
-                if agent:
-                    coroutines.append(agent.execute(task, execution_context))
-                    roles.append(agent_role)
+        for agent_role in routing.agents_needed:
+            agent = self.available_agents.get(agent_role)
+            if agent:
+                coroutines.append(agent.execute(task, execution_context))
+                roles.append(agent_role)
 
-            results = await asyncio.gather(*coroutines, return_exceptions=True)
+        results = await asyncio.gather(*coroutines, return_exceptions=True)
 
-            for role, result in zip(roles, results):
-
-                if isinstance(result, Exception):
-                    agent_results.append({
-                        "agent": role,
-                        "role": role,
-                        "success": False,
-                        "output": "",
-                        "error": str(result)
-                    })
-                    continue
-
+        for role, result in zip(roles, results):
+            # Guard against exceptions first
+            if isinstance(result, BaseException):
                 agent_results.append({
-                    "agent": result.agent_name,
+                    "agent": role,
                     "role": role,
-                    "success": result.success,
-                    "output": result.output,
-                    "confidence": result.confidence,
-                    "metadata": result.metadata,
-                    "errors": result.errors
+                    "success": False,
+                    "output": "",
+                    "error": str(result)
                 })
+                continue
 
-                if result.success:
-                    execution_context[f"{role}_output"] = result.output
-                    execution_context[f"{role}_success"] = True
-            for role, result in zip(roles, results):
+            # Safe to access AgentResult attributes here
+            agent_results.append({
+                "agent": result.agent_name,
+                "role": role,
+                "success": result.success,
+                "output": result.output,
+                "confidence": result.confidence,
+                "metadata": result.metadata,
+                "errors": result.errors
+            })
 
-                if isinstance(result, Exception):
-                    agent_results.append({
-                        "agent": role,
-                        "role": role,
-                        "success": False,
-                        "output": "",
-                        "error": str(result)
-                    })
-                    continue
+            # Update memory and context only for non-exception results
+            agent = self.available_agents.get(role)
+            if agent:
+                self.agent_memory.update(agent.name, agent.get_stats())
 
-                agent_results.append({
-                    "agent": result.agent_name,
-                    "role": role,
-                    "success": result.success,
-                    "output": result.output,
-                    "confidence": result.confidence,
-                    "metadata": result.metadata,
-                    "errors": result.errors
-                })
-
-                agent = self.available_agents.get(role)
-                if agent:
-                    self.agent_memory.update(agent.name, agent.get_stats())
-
-                if result.success:
-                    execution_context[f"{role}_output"] = result.output
-                    execution_context[f"{role}_success"] = True
-
+            if result.success:
+                execution_context[f"{role}_output"] = result.output
+                execution_context[f"{role}_success"] = True
 
         # ==================================================
         # 🧭 SEQUENTIAL EXECUTION (Day 1–2 behavior)

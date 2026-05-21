@@ -1,6 +1,6 @@
 import json
 import structlog
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.utils.llm import call_llm
 from app.utils.file_manager import FileManager
@@ -10,154 +10,146 @@ from app.tools.shell_tool import ShellExecutor
 from app.tools.file_tools import FileReadTool, FileWriteTool, FileListTool, FileDeleteTool
 from app.tools.web_search import WebSearchTool, WebFetchTool
 from app.core.config import settings
+
 # This file answers: "Which tool should I use, and what exactly should I pass to it?"
 logger = structlog.get_logger()
 
 
 class ExecutorAgent:
     """
-    Enhanced executor with Week 2 tools + your custom improvements.
-    
-    WEEK 1 TOOLS:
-    - python_executor
-    - shell_executor
-    
-    WEEK 2 TOOLS:
-    - file_read, file_write, file_list, file_delete (persistent workspace)
-    - web_search, web_fetch (web access)
-    
-    YOUR ENHANCEMENTS:
-    - Claude Haiku 4.5 model
-    - Deterministic fallback for common cases
-    - Enhanced validation for python_executor
+    Executor agent: picks the right tool for each step and runs it.
+
+    Tools available:
+    - python_executor  : run Python code in a sandbox
+    - shell_executor   : run whitelisted shell commands (optional, disabled in prod)
+    - file_read/write/list/delete : persistent workspace file operations
+    - web_search / web_fetch      : internet access
     """
 
     SYSTEM_PROMPT = """You are a precise tool execution agent. Your job is to:
-    1. Read the step instruction
-    2. Choose the RIGHT tool
-    3. Generate the EXACT EXECUTABLE inputs needed
+1. Read the step instruction
+2. Choose the RIGHT tool
+3. Generate the EXACT EXECUTABLE inputs needed
 
-    CRITICAL: For python_executor, you MUST provide actual executable Python code, NOT the instruction text!
+CRITICAL: For python_executor, you MUST provide actual executable Python code, NOT the instruction text!
 
-    AVAILABLE TOOLS:
-    {tools_description}
+AVAILABLE TOOLS:
+{tools_description}
 
-    IMPORTANT NOTES ABOUT web_search:
-    - web_search ALREADY returns formatted, structured results
-    - Output includes: numbered results, titles, descriptions, and URLs
-    - NO parsing or extraction needed - results are ready to use
-    - If you need to analyze results, read them directly - don't try to parse them
+IMPORTANT NOTES ABOUT web_search:
+- web_search ALREADY returns formatted, structured results
+- Output includes: numbered results, titles, descriptions, and URLs
+- NO parsing or extraction needed — results are ready to use
 
-    RESPONSE FORMAT (JSON only):
-    {{
-    "tool": "tool_name",
-    "inputs": {{
-        "param1": "value1"
-    }},
-    "reasoning": "why this tool and these inputs"
-    }}
- IMPORTANT:
-If a task requires external libraries (flask, fastapi, django, etc),
+IMPORTANT:
+If a task requires external libraries (flask, fastapi, django, etc.),
 DO NOT execute them.
-Instead, generate code as a file or plain output without running it.
-    For code in JSON strings:
-    - Use escaped newlines: \\n
-    - Keep code simple and focused
-    - Avoid embedding large data structures in code
+Instead, generate the code as a file using file_write without running it.
 
-    RESPOND ONLY WITH VALID JSON.
-    """
+For code in JSON strings:
+- Use escaped newlines: \\n
+- Keep code simple and focused
+- Avoid embedding large data structures in code
+
+RESPONSE FORMAT (JSON only):
+{
+  "tool": "tool_name",
+  "inputs": {
+    "param1": "value1"
+  },
+  "reasoning": "why this tool and these inputs"
+}
+
+RESPOND ONLY WITH VALID JSON.
+"""
 
     def __init__(self, model: str = "claude-haiku-4-5-20251001"):
-        # Your choice: Claude Haiku for excellent tool reasoning
         self.model = model
         self.tools: Dict[str, Tool] = {}
-        
-        # Initialize file manager (Week 2)
+
         self.file_manager = FileManager()
+
+        # FIX: Register each tool exactly once, respecting feature flags.
+        # Previously each tool was registered twice — once conditionally,
+        # then again unconditionally — which silently bypassed the flags.
         if settings.ENABLE_PYTHON_EXECUTOR:
             self._register_tool(PythonExecutor())
 
         if settings.ENABLE_SHELL:
             self._register_tool(ShellExecutor())
-        # Register Week 1 tools
-        self._register_tool(PythonExecutor())
-        self._register_tool(ShellExecutor())
-        
-        # Register Week 2 file tools
+
+        # File and web tools are always available
         self._register_tool(FileReadTool(self.file_manager))
         self._register_tool(FileWriteTool(self.file_manager))
         self._register_tool(FileListTool(self.file_manager))
         self._register_tool(FileDeleteTool(self.file_manager))
-        
-        # Register Week 2 web tools
         self._register_tool(WebSearchTool())
         self._register_tool(WebFetchTool())
 
-    def _register_tool(self, tool: Tool):
+    def _register_tool(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
         logger.info("tool_registered", tool=tool.name)
 
     def _get_tools_description(self) -> str:
         descriptions = []
         for tool in self.tools.values():
-            descriptions.append(
-                f"""
-Tool: {tool.name}
-Description: {tool.description}
-Input Schema: {json.dumps(tool.input_schema, indent=2)}
+            extra = ""
+            if tool.name == "python_executor":
+                extra = "- The 'code' parameter must be EXECUTABLE Python code, not a description"
+            elif tool.name == "shell_executor":
+                extra = "- The 'command' parameter must be a valid shell command, not a description"
+            elif tool.name.startswith("file_"):
+                extra = "- Files persist across tasks in the shared workspace"
 
-IMPORTANT for {tool.name}:
-{"- The 'code' parameter must be EXECUTABLE Python code, not a description" if tool.name == "python_executor" else ""}
-{"- The 'command' parameter must be a valid shell command, not a description" if tool.name == "shell_executor" else ""}
-{"- Files persist across tasks in shared workspace" if tool.name.startswith("file_") else ""}
-"""
+            descriptions.append(
+                f"Tool: {tool.name}\n"
+                f"Description: {tool.description}\n"
+                f"Input Schema: {json.dumps(tool.input_schema, indent=2)}\n"
+                + (f"IMPORTANT for {tool.name}:\n{extra}\n" if extra else "")
             )
         return "\n".join(descriptions)
 
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+
     async def execute_step(
-        self, instruction: str, context: Dict[str, Any] | None = None
+        self, instruction: str, context: Optional[Dict[str, Any]] = None
     ) -> ToolResult:
+        """Choose a tool and execute a single plan step."""
 
         logger.info("executor_starting", instruction=instruction)
         context = context or {}
         avoid_tools = context.get("avoid_tools", [])
 
+        # If python_executor is on the avoid list, force file_write instead
         if "python_executor" in avoid_tools:
             logger.warning("forcing_tool_due_to_failures", tool="file_write")
             context["forced_tool"] = "file_write"
 
-        # ----------------------------------
-        # 🔥 YOUR DETERMINISTIC FALLBACK (NO LLM)
-        # ----------------------------------
+        # ------------------------------------------------------------------
+        # Deterministic fast-path: no LLM call needed for trivial cases
+        # ------------------------------------------------------------------
         instruction_l = instruction.lower()
 
         try:
-            # Simple heuristics for common cases
             if instruction_l.startswith("list") or "list files" in instruction_l:
-                # Week 2: Check if they want workspace files or sandbox files
                 if "workspace" in instruction_l or "persistent" in instruction_l:
                     return await self.tools["file_list"].run()
+                elif settings.ENABLE_SHELL and "shell_executor" in self.tools:
+                    return await self.tools["shell_executor"].run(command="ls -la")
                 else:
-                     if settings.ENABLE_SHELL:
-                                return await self.tools["shell_executor"].run(command="ls -la")
-                     else:
-                            return ToolResult(
-                                success=False,
-                                output="",
-                                error="Shell executor disabled in production"
-                            )
-
+                    return ToolResult(
+                        success=False,
+                        output="",
+                        error="Shell executor is disabled; use file_list for workspace files.",
+                    )
         except Exception as e:
-            logger.warning(
-                "executor_fallback_failed",
-                instruction=instruction,
-                error=str(e),
-            )
+            logger.warning("executor_fallback_failed", instruction=instruction, error=str(e))
 
-        # ----------------------------------
-        # LLM TOOL SELECTION (Your Claude Model)
-        # ----------------------------------
+        # ------------------------------------------------------------------
+        # LLM-based tool selection
+        # ------------------------------------------------------------------
         tool_decision = await self._choose_tool(instruction, context)
 
         if not tool_decision:
@@ -168,38 +160,28 @@ IMPORTANT for {tool.name}:
             )
 
         tool_name = tool_decision.get("tool")
-        
         tool_inputs = tool_decision.get("inputs", {})
+        reasoning = tool_decision.get("reasoning", "")
+
+        # Honour forced_tool override (set earlier when a tool is on avoid list)
         forced_tool = context.get("forced_tool")
         if forced_tool:
             logger.warning(
-                "forcing_tool_override",
-                chosen=tool_name,
-                forced=forced_tool
+                "forcing_tool_override", chosen=tool_name, forced=forced_tool
             )
             tool_name = forced_tool
 
-        reasoning = tool_decision.get("reasoning", "")
+        logger.info("executor_tool_selected", tool=tool_name, reasoning=reasoning)
 
-        logger.info(
-            "executor_tool_selected",
-            tool=tool_name,
-            reasoning=reasoning,
-        )
-        # 🚫 Hard block avoided tools
+        # Hard block for avoided tools (catches edge cases where LLM still picked one)
         if tool_name in avoid_tools:
-            logger.warning(
-                "blocked_avoided_tool",
-                tool=tool_name,
-                avoid_tools=avoid_tools
-            )
+            logger.warning("blocked_avoided_tool", tool=tool_name)
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Tool '{tool_name}' is blocked due to repeated failures"
+                error=f"Tool '{tool_name}' is blocked due to repeated failures.",
             )
 
-        # Validate tool exists
         if tool_name not in self.tools:
             return ToolResult(
                 success=False,
@@ -207,38 +189,31 @@ IMPORTANT for {tool.name}:
                 error=f"Unknown tool: {tool_name}",
             )
 
-        # YOUR VALIDATION: Additional check for python_executor
+        # Extra validation for python_executor inputs
         if tool_name == "python_executor":
             code = tool_inputs.get("code", "")
             if not code:
                 return ToolResult(
                     success=False,
                     output="",
-                    error="Python executor requires 'code' parameter",
+                    error="python_executor requires a 'code' parameter.",
                 )
-            # Check if code looks like an instruction rather than code
             if code.lower().startswith(("create a", "write a", "make a", "build a")):
-                logger.warning(
-                    "executor_invalid_code_input",
-                    code_preview=code[:100],
-                )
+                logger.warning("executor_invalid_code_input", code_preview=code[:100])
                 return ToolResult(
                     success=False,
                     output="",
-                    error="Received instruction text instead of executable code. Please provide actual Python code.",
+                    error=(
+                        "Received an instruction string instead of executable code. "
+                        "Please provide actual Python code."
+                    ),
                 )
 
-        tool = self.tools[tool_name]
-
+        # Run the tool
         try:
-            result = await tool.run(**tool_inputs)
-            logger.info(
-                "executor_completed",
-                tool=tool_name,
-                success=result.success,
-            )
+            result = await self.tools[tool_name].run(**tool_inputs)
+            logger.info("executor_completed", tool=tool_name, success=result.success)
             return result
-
         except Exception as e:
             logger.error("executor_error", tool=tool_name, error=str(e))
             return ToolResult(
@@ -246,15 +221,25 @@ IMPORTANT for {tool.name}:
                 output="",
                 error=f"Tool execution failed: {str(e)}",
             )
-    
+
+    # ------------------------------------------------------------------
+    # Private: LLM-based tool selection
+    # ------------------------------------------------------------------
+
     async def _choose_tool(
         self, instruction: str, context: Dict[str, Any]
-    ) -> Dict | None:
+    ) -> Optional[Dict]:
+        """
+        Ask the LLM to pick the right tool and generate its inputs.
+        Returns the parsed JSON decision dict, or None on failure.
 
+        FIX: This was previously nested *inside* execute_step as an inner
+        function, making it unreachable as a proper class method. The
+        try/except block containing the actual call_llm call was also
+        indented outside both methods entirely.
+        """
         tools_desc = self._get_tools_description()
-        system_prompt = self.SYSTEM_PROMPT.format(
-            tools_description=tools_desc
-        )
+        system_prompt = self.SYSTEM_PROMPT.format(tools_description=tools_desc)
 
         context_str = ""
         if context:
@@ -263,21 +248,19 @@ IMPORTANT for {tool.name}:
                 + json.dumps(context, indent=2)
             )
 
+        user_prompt = (
+            f"STEP INSTRUCTION:\n\n{instruction}{context_str}\n\n"
+            "Choose the appropriate tool and generate EXECUTABLE inputs (not instruction text).\n"
+            "For python_executor, generate actual Python code.\n"
+            "For shell_executor, generate actual shell commands.\n"
+            "For file_* tools, use appropriate filenames and content.\n"
+            "For web_* tools, use proper queries or URLs.\n"
+            "Return JSON only."
+        )
+
         if context.get("forced_tool"):
-             user_prompt = f"""STEP INSTRUCTION:
-             
-    user_prompt += f"\n\nYOU MUST USE TOOL: {context['forced_tool']}"
+            user_prompt += f"\n\nYOU MUST USE TOOL: {context['forced_tool']}"
 
-    {instruction}
-    {context_str}
-
-    Choose the appropriate tool and generate EXECUTABLE inputs (not instruction text).
-    For python_executor, generate actual Python code.
-    For shell_executor, generate actual shell commands.
-    For file_* tools, use appropriate filenames and content.
-    For web_* tools, use proper queries or URLs.
-    Return JSON only.
-    """
         if context.get("avoid_tools"):
             user_prompt += f"\n\nDO NOT USE THESE TOOLS: {context['avoid_tools']}"
 
@@ -289,61 +272,58 @@ IMPORTANT for {tool.name}:
                 ],
                 model=self.model,
                 temperature=0.1,
-                max_tokens=4000,  # Increase token limit for longer responses
+                max_tokens=4000,
             )
 
             response_text = response.strip()
-            
-            # Remove markdown code blocks if present
+
+            # Strip markdown code fences if the model wrapped the JSON
             if response_text.startswith("```"):
                 lines = response_text.split("\n")
-                # Remove first line (```json or ```)
-                lines = lines[1:]
-                # Remove last line if it's ```
+                lines = lines[1:]  # drop the opening ```json / ```
                 if lines and lines[-1].strip() == "```":
                     lines = lines[:-1]
                 response_text = "\n".join(lines).strip()
-            
-            # Try to find and extract valid JSON
-            # Method 1: Direct parse
+
+            # Attempt 1: direct parse
             try:
                 decision = json.loads(response_text)
                 logger.debug(
                     "executor_tool_decision",
                     tool=decision.get("tool"),
-                    inputs_preview={k: str(v)[:100] for k, v in decision.get("inputs", {}).items()}
+                    inputs_preview={
+                        k: str(v)[:100] for k, v in decision.get("inputs", {}).items()
+                    },
                 )
                 return decision
             except json.JSONDecodeError:
                 pass
-            
-            # Method 2: Find JSON object boundaries
-            import re
-            
-            # Find the outermost JSON object
+
+            # Attempt 2: find outermost JSON object by brace matching
             brace_count = 0
-            start_idx = -1
-            end_idx = -1
-            
+            start_idx = end_idx = -1
             for i, char in enumerate(response_text):
-                if char == '{':
+                if char == "{":
                     if brace_count == 0:
                         start_idx = i
                     brace_count += 1
-                elif char == '}':
+                elif char == "}":
                     brace_count -= 1
                     if brace_count == 0 and start_idx != -1:
                         end_idx = i
                         break
-            
+
             if start_idx != -1 and end_idx != -1:
-                json_str = response_text[start_idx:end_idx + 1]
+                json_str = response_text[start_idx : end_idx + 1]
                 try:
                     decision = json.loads(json_str)
                     logger.debug(
                         "executor_tool_decision",
                         tool=decision.get("tool"),
-                        inputs_preview={k: str(v)[:100] for k, v in decision.get("inputs", {}).items()}
+                        inputs_preview={
+                            k: str(v)[:100]
+                            for k, v in decision.get("inputs", {}).items()
+                        },
                     )
                     return decision
                 except json.JSONDecodeError as e:
@@ -351,15 +331,15 @@ IMPORTANT for {tool.name}:
                         "executor_json_parse_error",
                         error=str(e),
                         json_preview=json_str[:500],
-                        position=e.pos if hasattr(e, 'pos') else None
+                        position=getattr(e, "pos", None),
                     )
-            
-            # If all parsing failed, log the full response for debugging
+
+            # All parsing failed
             logger.error(
                 "executor_json_extraction_failed",
                 response_length=len(response_text),
                 response_preview=response_text[:1000],
-                response_end=response_text[-500:] if len(response_text) > 500 else response_text
+                response_end=response_text[-500:] if len(response_text) > 500 else response_text,
             )
             return None
 
