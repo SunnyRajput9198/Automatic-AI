@@ -1,10 +1,8 @@
-import os
 import structlog
 from typing import Dict, Any
 import httpx
-from bs4 import BeautifulSoup
-import re
-from urllib.parse import unquote
+import xml.etree.ElementTree as ET  # for ArXiv XML parsing
+import asyncio
 
 from app.tools.base import Tool, ToolResult
 
@@ -12,7 +10,8 @@ logger = structlog.get_logger()
 
 class WebSearchTool(Tool):
     """
-    Search the web using DuckDuckGo HTML (no API key required)
+    Search using Wikipedia REST API + ArXiv API.
+    No API key required.
     """
     
     @property
@@ -41,19 +40,58 @@ class WebSearchTool(Tool):
             "required": ["query"]
         }
     
-    def _extract_url(self, ddg_url: str) -> str:
-        """Extract actual URL from DuckDuckGo redirect URL"""
-        try:
-            # DuckDuckGo wraps URLs like: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com
-            if 'uddg=' in ddg_url:
-                # Extract the uddg parameter
-                match = re.search(r'uddg=([^&]+)', ddg_url)
-                if match:
-                    return unquote(match.group(1))
-            return ddg_url
-        except:
-            return ddg_url
+    async def _wiki_search(self, query: str) -> list[dict]:
+        async with httpx.AsyncClient(timeout=10,headers={"User-Agent": "ResearchAgent/1.0 (educational project)"}) as client:
+        
+        # fix spaces → underscores
+            slug = query.strip().replace(" ", "_")# if koi blank soace aae to _ dal do like machine_learning if _ ni hua to
+        
+            response = await client.get(
+            f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
+        )
+        
+        # handle page not found
+            if response.status_code != 200:
+                return []
+        
+            data = response.json()
+            return [{
+            "source": "Wikipedia",
+            "title": data.get("title", ""),
+            "content": data.get("extract", ""),
+            "url": data.get("content_urls", {})
+                .get("desktop", {})
+                .get("page", "")
+        }]
     
+    async def _arxiv_search(self, query: str) -> list[dict]:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+            "https://export.arxiv.org/api/query",
+            params={
+                "search_query": f"all:{query}",
+                "max_results": 3
+            }
+        )
+        
+            root = ET.fromstring(response.text)
+            ns = {"a": "http://www.w3.org/2005/Atom"}
+            # ns is used as a namespace. It tells the parser to look inside the a:entry tag for the title, summary, and id tags.
+            #xmlns is called a namespace. Without telling your code that namespace, findall("entry") returns nothing. The ns dictionary is how you tell Python which namespace to look inside.
+            papers = []
+            for entry in root.findall("a:entry", ns):
+                title = entry.find("a:title", ns)
+                summary = entry.find("a:summary", ns)
+                link = entry.find("a:id", ns)
+            
+                papers.append({
+                "source": "ArXiv",
+                "title": title.text.strip() if title is not None and title.text else "",
+                "content": summary.text.strip() if summary is not None and summary.text else "",
+                "url": link.text.strip() if link is not None and link.text else ""
+            })
+        
+            return papers
     async def run(self, **kwargs) -> ToolResult:
         query = kwargs.get("query", "")
         max_results = kwargs.get("max_results", 5)
@@ -68,84 +106,49 @@ class WebSearchTool(Tool):
         logger.info("web_search_running", query=query)
         
         try:
-            # Use DuckDuckGo HTML search (more reliable than API)
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                response = await client.get(
-                    "https://html.duckduckgo.com/html/",
-                    params={"q": query},
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    }
-                )
-                
-                if response.status_code != 200:
-                    logger.error("web_search_http_error", status=response.status_code)
-                    return ToolResult(
-                        success=False,
-                        output="",
-                        error=f"Search returned status {response.status_code}"
-                    )
-                
-                # Parse HTML results - specify parser to avoid warning
-                soup = BeautifulSoup(response.text, 'html.parser')
-                results = []
-                
-                # Find result divs (multiple possible class names)
-                result_divs = (
-                    soup.find_all('div', class_='result') or 
-                    soup.find_all('div', class_='results_links') or
-                    soup.find_all('div', class_='web-result')
-                )
-                
-                for i, result_div in enumerate(result_divs[:max_results]):
-                    # Try different possible selectors
-                    title_elem = (
-                        result_div.find('a', class_='result__a') or
-                        result_div.find('a', class_='result__url') or
-                        result_div.find('h2', class_='result__title')
-                    )
-                    
-                    snippet_elem = (
-                        result_div.find('a', class_='result__snippet') or
-                        result_div.find('div', class_='result__snippet') or
-                        result_div.find('span', class_='result__snippet')
-                    )
-                    
-                    if title_elem:
-                        title = title_elem.get_text(strip=True)
-                        raw_url = str(title_elem.get('href', '') or '')
-                        url = self._extract_url(raw_url) if raw_url else ""
-                        snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
-                        
-                        if title:  # Only add if we have at least a title
-                            result_text = f"{i+1}. {title}"
-                            if snippet:
-                                result_text += f"\n   {snippet}"
-                            if url and url.startswith('http'):
-                                result_text += f"\n   URL: {url}"
-                            results.append(result_text)
-                
-                if not results:
-                    logger.warning("web_search_no_results", query=query)
-                    # Still return success but indicate no results
-                    return ToolResult(
-                        success=True,
-                        output=f"Search completed but no results found for '{query}'. The search engine may be blocking automated requests or the query returned no matches. Try a different search term.",
-                        metadata={"query": query, "num_results": 0, "source": "DuckDuckGo"}
-                    )
-                
-                output = "\n\n".join(results)
-                logger.info("web_search_completed", num_results=len(results))
-                
+            wiki_results, arxiv_results = await asyncio.gather(
+                self._wiki_search(query),
+                self._arxiv_search(query),
+                return_exceptions=True # don't let one failure kill both
+            )
+
+            sources = []
+            if isinstance(wiki_results, list):
+                sources.extend(wiki_results)
+            if isinstance(arxiv_results, list):
+                sources.extend(arxiv_results)
+
+            if not sources:
                 return ToolResult(
-                    success=True,
-                    output=output,
-                    metadata={
-                        "query": query,
-                        "num_results": len(results),
-                        "source": "DuckDuckGo"
-                    }
+                    success=False,
+                    output="",
+                    error="No results found from Wikipedia or ArXiv",
+                    metadata={"query": query, "num_results": 0}
                 )
+
+            # format sources into text
+            formatted = []
+            for i, s in enumerate(sources[:max_results], 1):
+                formatted.append(
+                    f"{i}. {s['source']} — {s['title']}\n"
+                    f"   {s['content'][:500]}\n"
+                    f"   URL: {s['url']}"
+                )
+
+            output = "\n\n".join(formatted)
+            logger.info("web_search_completed", num_results=len(sources))
+
+            return ToolResult(
+                success=True,
+                output=output,
+                metadata={
+                    "query": query,
+                    "num_results": len(sources),
+                    "source": "wikipedia+arxiv"
+                }
+            )
+                        
+            
         
         except httpx.TimeoutException:
             logger.error("web_search_timeout", query=query)

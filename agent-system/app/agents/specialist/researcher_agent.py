@@ -1,7 +1,7 @@
 import structlog
 import time
 from typing import Dict, Any, Optional
-
+import xml.etree.ElementTree as ET
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.tools.web_search import WebSearchTool, WebFetchTool
 from dotenv import load_dotenv
