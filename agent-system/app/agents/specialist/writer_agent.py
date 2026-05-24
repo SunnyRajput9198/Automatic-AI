@@ -2,9 +2,9 @@ import json
 import structlog
 import time
 from typing import Dict, Any, Optional
-
+from app.utils.json_parser import extract_json
 from app.agents.base_agent import BaseAgent, AgentResult
-from app.utils.llm import call_llm
+from app.utils.llm import call_llm, call_llm_with_system
 
 logger = structlog.get_logger()
 from dotenv import load_dotenv
@@ -160,37 +160,17 @@ Create professional content based on the task and context.
 Return JSON only."""
 
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=0.7,  # Higher temperature for creative writing
-            )
+            response = await call_llm_with_system(
+    system_prompt=self.SYSTEM_PROMPT,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.7,
+)
 
             # Parse response
-            response_text = response.strip()
-
-            # Handle markdown code blocks
-            if response_text.startswith("```"):
-                response_text = (
-                    response_text.split("\n", 1)[1]
-                    if "\n" in response_text
-                    else response_text[3:]
-                )
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
-
-            # Extract JSON
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-
-            if start != -1 and end != -1:
-                response_text = response_text[start : end + 1]
-
-            content_data = json.loads(response_text)
+            content_data = extract_json(response, context="writer")
+            if not content_data:
+                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
 
             logger.debug(
                 "writer_content_generated",

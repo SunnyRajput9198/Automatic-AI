@@ -6,5 +6,13 @@
     "successes": 1,
     "failures": 0,
     "success_rate": 1.0
+  },
+  "engineer_001": {
+    "name": "engineer_001",
+    "role": "engineer",
+    "calls": 1,
+    "successes": 1,
+    "failures": 0,
+    "success_rate": 1.0
   }
 }

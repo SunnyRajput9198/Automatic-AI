@@ -55,7 +55,7 @@ class RateLimiter:
             self.calls.append(datetime.now())
 
 
-rate_limiter = RateLimiter(max_calls=10, period_seconds=60)
+rate_limiter = RateLimiter(max_calls=5, period_seconds=60)
 
 
 # -------------------------------
@@ -179,3 +179,24 @@ async def call_llm(
             error=str(e),
         )
         raise RuntimeError(f"Anthropic LLM call failed: {str(e)}")
+    
+async def call_llm_with_system(
+    system_prompt: str,
+    user_prompt: str,
+    model: str = DEFAULT_MODEL,
+    temperature: float = 0.1,
+    max_tokens: int = 4000,
+) -> str:
+    """
+    Convenience wrapper for the common system+user message pattern.
+    Used by most agents — reduces boilerplate from 8 lines to 1.
+    """
+    return await call_llm(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )

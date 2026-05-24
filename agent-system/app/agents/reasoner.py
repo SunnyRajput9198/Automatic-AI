@@ -3,8 +3,8 @@ import structlog
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel
-
-from app.utils.llm import call_llm
+from app.utils.json_parser import extract_json
+from app.utils.llm import call_llm, call_llm_with_system
 
 logger = structlog.get_logger()
 
@@ -163,35 +163,16 @@ RESPOND ONLY WITH JSON."""
         response_text = ""
 
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=0.2,
-            )
+            response = await call_llm_with_system(
+    system_prompt=self.SYSTEM_PROMPT,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.2,
+)
 
-            response_text = response.strip() if response else ""
-
-            # Strip markdown code fences if present
-            if response_text.startswith("```"):
-                response_text = (
-                    response_text.split("\n", 1)[1]
-                    if "\n" in response_text
-                    else response_text[3:]
-                )
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
-
-            # Extract the outermost JSON object
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                response_text = response_text[start : end + 1]
-
-            reasoning_data = json.loads(response_text)
+            reasoning_data = extract_json(response, context="reasoner")
+            if not reasoning_data:
+                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
 
             reasoning = ReasoningOutput(
                 problem_type=reasoning_data.get("problem_type", "mixed"),

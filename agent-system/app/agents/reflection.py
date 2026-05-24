@@ -5,8 +5,9 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from datetime import datetime
 from sqlalchemy.orm import Session
+from app.utils.json_parser import extract_json
 
-from app.utils.llm import call_llm
+from app.utils.llm import call_llm, call_llm_with_system
 from app.models.task import Task
 
 logger = structlog.get_logger()
@@ -216,33 +217,17 @@ Be specific and actionable. Return JSON only."""
         
         response_text = ""
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt}
-                ],
-                model=self.model,
-                temperature=0.3,  # Some creativity in analysis
-            )
+            response = await call_llm_with_system(
+    system_prompt=self.SYSTEM_PROMPT,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.3,
+)
             
             # Parse response
-            response_text = response.strip() if response else ""
-            
-            # Handle markdown code blocks
-            if response_text.startswith("```"):
-                response_text = response_text.split("\n", 1)[1] if "\n" in response_text else response_text[3:]
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
-            
-            # Extract JSON
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-            
-            if start != -1 and end != -1 and end > start:
-                response_text = response_text[start:end+1]
-            
-            reflection_data = json.loads(response_text)
+            reflection_data = extract_json(response, context="reflection")
+            if not reflection_data:
+                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
             
             # Create reflection object
             reflection = Reflection(

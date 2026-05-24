@@ -5,8 +5,9 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from app.utils.json_parser import extract_json
 
-from app.utils.llm import call_llm
+from app.utils.llm import call_llm, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system
 from app.models.memory import Memory
 from app.agents.reflection import Reflection
 
@@ -256,28 +257,16 @@ class ConfidenceMemory:
         )
 
         try:
-            response = await call_llm(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model,
-                temperature=0.1,
-            )
+            response = await call_llm_with_system(
+    system_prompt="",
+    user_prompt=prompt,
+    model=self.model,
+    temperature=0.1,
+)
 
-            response_text = response.strip()
-
-            # Strip markdown fences if present
-            if response_text.startswith("```"):
-                response_text = response_text.split("\n", 1)[1] if "\n" in response_text else response_text[3:]
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
-
-            # Extract JSON object
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-            if start != -1 and end != -1:
-                response_text = response_text[start : end + 1]
-
-            result = json.loads(response_text)
+            result = extract_json(response, context="confidence_memory")
+            if not result:
+                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
             relevant_ids: List[str] = result.get("relevant_ids", [])[:limit]
 
             # Build the return list from the already-scored data (no extra DB round-trip)

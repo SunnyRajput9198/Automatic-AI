@@ -1,4 +1,5 @@
 import subprocess
+from app.core.config import settings
 import os
 import tempfile
 import structlog
@@ -54,8 +55,11 @@ class PythonExecutor(Tool):
         
         # CRITICAL FIX: Use shared workspace as working directory
         # This ensures files created by Python code persist and are accessible by file_read
-        shared_workspace = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared")
+        
+        shared_workspace = settings.SHARED_WORKSPACE
         os.makedirs(shared_workspace, exist_ok=True)
+
+        sandbox_dir = settings.SANDBOX_DIR
         
         # Sandbox directory for temporary script files only
         sandbox_dir = os.getenv("SANDBOX_DIR", "/app/sandbox")

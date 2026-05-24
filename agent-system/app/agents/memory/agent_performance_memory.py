@@ -4,7 +4,8 @@ import structlog
 from typing import Dict
 
 logger = structlog.get_logger()
-WORKSPACE = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared")
+from app.core.config import settings
+WORKSPACE = settings.SHARED_WORKSPACE
 MEMORY_PATH = os.path.join(WORKSPACE, "agent_performance.json")
 
 class AgentPerformanceMemory:

@@ -1,8 +1,8 @@
 import json
 import structlog
 from typing import Dict, Any, Optional
-
-from app.utils.llm import call_llm
+from app.utils.json_parser import extract_json
+from app.utils.llm import call_llm, call_llm_with_system
 from app.utils.file_manager import FileManager
 from app.tools.base import Tool, ToolResult
 from app.tools.python_tool import PythonExecutor
@@ -265,15 +265,13 @@ RESPOND ONLY WITH VALID JSON.
             user_prompt += f"\n\nDO NOT USE THESE TOOLS: {context['avoid_tools']}"
 
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=0.1,
-                max_tokens=4000,
-            )
+            response = await call_llm_with_system(
+    system_prompt=system_prompt,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.1,
+    max_tokens=4000,
+)
 
             response_text = response.strip()
 
@@ -286,62 +284,22 @@ RESPOND ONLY WITH VALID JSON.
                 response_text = "\n".join(lines).strip()
 
             # Attempt 1: direct parse
-            try:
-                decision = json.loads(response_text)
-                logger.debug(
-                    "executor_tool_decision",
-                    tool=decision.get("tool"),
-                    inputs_preview={
-                        k: str(v)[:100] for k, v in decision.get("inputs", {}).items()
-                    },
+            decision = extract_json(response_text, context="executor")
+            if not decision:
+                logger.error(
+                    "executor_json_extraction_failed",
+                    response_preview=response_text[:200]
                 )
-                return decision
-            except json.JSONDecodeError:
-                pass
+                return None
 
-            # Attempt 2: find outermost JSON object by brace matching
-            brace_count = 0
-            start_idx = end_idx = -1
-            for i, char in enumerate(response_text):
-                if char == "{":
-                    if brace_count == 0:
-                        start_idx = i
-                    brace_count += 1
-                elif char == "}":
-                    brace_count -= 1
-                    if brace_count == 0 and start_idx != -1:
-                        end_idx = i
-                        break
-
-            if start_idx != -1 and end_idx != -1:
-                json_str = response_text[start_idx : end_idx + 1]
-                try:
-                    decision = json.loads(json_str)
-                    logger.debug(
-                        "executor_tool_decision",
-                        tool=decision.get("tool"),
-                        inputs_preview={
-                            k: str(v)[:100]
-                            for k, v in decision.get("inputs", {}).items()
-                        },
-                    )
-                    return decision
-                except json.JSONDecodeError as e:
-                    logger.error(
-                        "executor_json_parse_error",
-                        error=str(e),
-                        json_preview=json_str[:500],
-                        position=getattr(e, "pos", None),
-                    )
-
-            # All parsing failed
-            logger.error(
-                "executor_json_extraction_failed",
-                response_length=len(response_text),
-                response_preview=response_text[:1000],
-                response_end=response_text[-500:] if len(response_text) > 500 else response_text,
+            logger.debug(
+                "executor_tool_decision",
+                tool=decision.get("tool"),
+                inputs_preview={
+                    k: str(v)[:100] for k, v in decision.get("inputs", {}).items()
+                },
             )
-            return None
+            return decision
 
         except Exception as e:
             logger.error("executor_choice_error", error=str(e))

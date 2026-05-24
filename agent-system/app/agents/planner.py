@@ -2,8 +2,8 @@ import json
 import structlog
 from typing import List, Dict
 from pydantic import BaseModel
-
-from app.utils.llm import call_llm
+from app.utils.json_parser import extract_json
+from app.utils.llm import call_llm, call_llm_with_system
 
 logger = structlog.get_logger()
 
@@ -126,6 +126,15 @@ REPLAN RULES (when a step failed):
 - Always address the specific error in your new plan
 RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
 """
+    REPLAN_SYSTEM_PROMPT = SYSTEM_PROMPT + """
+
+REPLAN RULES (when a step failed):
+- Never repeat the exact same approach that failed
+- If python_executor failed → try file_write to save code instead
+- If web_search failed → try web_fetch with a direct URL
+- If file_read failed → try file_list first to verify file exists
+- Always address the specific error in your new plan
+"""
     def __init__(self, model: str = "claude-haiku-4-5-20251001"):
         # Claude Sonnet is excellent for planning & decomposition
         self.model = model
@@ -145,26 +154,17 @@ Return JSON only.
 """
         response=""
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=0.1,
-            )
+            response = await call_llm_with_system(
+    system_prompt=self.SYSTEM_PROMPT,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.1,
+)
 
             # ---- ROBUST JSON EXTRACTION ----
-            response_text = response.strip()
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-
-            if start == -1 or end == -1 or end <= start:
-                raise json.JSONDecodeError(
-                    "No valid JSON object found", response_text, 0
-                )
-
-            plan_data = json.loads(response_text[start : end + 1])
+            plan_data = extract_json(response, context="planner")
+            if not plan_data:
+                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
             steps = plan_data.get("steps", [])[:10]
 
             logger.info("planner_completed", num_steps=len(steps))
@@ -226,25 +226,16 @@ Return JSON only.
 """
 
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=0.3,
-            )
+            response = await call_llm_with_system(
+    system_prompt=self.REPLAN_SYSTEM_PROMPT,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.1,
+)
 
-            response_text = response.strip()
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-
-            if start == -1 or end == -1 or end <= start:
-                raise json.JSONDecodeError(
-                    "No valid JSON object found", response_text, 0
-                )
-
-            plan_data = json.loads(response_text[start : end + 1])
+            plan_data = extract_json(response, context="replanner")
+            if not plan_data:
+                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
             steps = plan_data.get("steps", [])[:10] # enforce max 10 steps
             validated_steps: List[Dict] = []
             for idx, step in enumerate(steps, start=1):

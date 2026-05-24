@@ -4,7 +4,8 @@ import json
 import structlog
 from typing import Dict, Any
 from enum import Enum
-from app.utils.llm import call_llm
+from app.utils.json_parser import extract_json
+from app.utils.llm import call_llm, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system
 from app.tools.base import ToolResult
 
 logger = structlog.get_logger()
@@ -108,26 +109,17 @@ RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
 """
 
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=0.1,
-            )
+            response = await call_llm_with_system(
+    system_prompt=self.SYSTEM_PROMPT,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.1,
+)
 
             # ---- ROBUST JSON EXTRACTION ----
-            response_text = response.strip()
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-
-            if start == -1 or end == -1 or end <= start:
-                raise json.JSONDecodeError(
-                    "No valid JSON object found", response_text, 0
-                )
-
-            evaluation = json.loads(response_text[start : end + 1])
+            evaluation = extract_json(response, context="critic")
+            if not evaluation:
+                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
 
             verdict_raw = evaluation.get("verdict", "FAIL")
             try:

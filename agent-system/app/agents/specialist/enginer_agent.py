@@ -4,7 +4,7 @@ import time
 from typing import Dict, Any, Optional
 
 from app.agents.base_agent import BaseAgent, AgentResult
-from app.utils.llm import call_llm
+from app.utils.llm import call_llm, call_llm_with_system
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -171,14 +171,12 @@ Determine the best engineering approach.
 Return JSON only."""
 
         try:
-            response = await call_llm(
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=0.1,
-            )
+            response = await call_llm_with_system(
+    system_prompt=self.SYSTEM_PROMPT,
+    user_prompt=user_prompt,
+    model=self.model,
+    temperature=0.1,
+)
 
             # Parse response
             response_text = response.strip()

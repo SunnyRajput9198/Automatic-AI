@@ -6,6 +6,7 @@ from typing import Any, Dict
 from app.tools.base import Tool, ToolResult
 
 logger = structlog.get_logger()
+from app.core.config import settings
 
 
 class ShellExecutor(Tool):
@@ -81,7 +82,7 @@ class ShellExecutor(Tool):
         # Now:  shared_workspace = os.getenv(...)    →  type: str
         # The tuple caused subprocess.run(cwd=...) and os.makedirs(...) to
         # receive a tuple instead of a str, triggering "No overloads match".
-        shared_workspace: str = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared")
+        shared_workspace: str = settings.SHARED_WORKSPACE
         os.makedirs(shared_workspace, exist_ok=True)
 
         try:
@@ -115,7 +116,7 @@ class ShellExecutor(Tool):
             return ToolResult(
                 success=False,
                 output="",
-                error="Command timed out after 30 seconds",
+                error="Command timed out after 10 seconds",
             )
 
         except Exception as e:
