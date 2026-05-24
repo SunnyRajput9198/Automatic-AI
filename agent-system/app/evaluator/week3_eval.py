@@ -16,14 +16,22 @@ logger = structlog.get_logger()
 
 class Week3Evaluator:
     """
-    Evaluate Week 3 improvements through multi-run experiments.
-    
-    EXPERIMENT TYPES:
-    1. Learning test: Same task 3x, measure improvement
-    2. Confidence test: Varied tasks, track confidence evolution
-    3. Search efficiency: Count searches over time
-    4. Cost analysis: LLM calls, retries, duration
-    """
+Runs tasks multiple times and measures system improvement over runs.
+
+METRICS TRACKED:
+- Duration per run (is it getting faster?)
+- Retry count (is it failing less?)
+- LLM calls (is it being more efficient?)
+- Search operations (is it searching less?)
+
+USAGE:
+    evaluator = ExperimentRunner()
+    await evaluator.run_learning_experiment(
+        task_description="your task",
+        num_runs=3,
+        orchestrator_func=your_orchestrator
+    )
+"""
     
     def __init__(self):
         self.results_dir = Path("evaluation_results")
@@ -127,7 +135,10 @@ class Week3Evaluator:
             # Wait between runs to allow learning
             if run_num < num_runs:
                 await asyncio.sleep(2)
-        
+        if not results["runs"]:
+            logger.warning("experiment_no_runs_completed")
+            results["improvement"] = {}
+            return results
         # Calculate improvements
         if len(results["runs"]) >= 2:
             first_run = results["runs"][0]
@@ -138,9 +149,12 @@ class Week3Evaluator:
                     first_run["duration_sec"] - last_run["duration_sec"],
                     2
                 ),
-                "duration_reduction_pct": round(
-                    ((first_run["duration_sec"] - last_run["duration_sec"]) / first_run["duration_sec"] * 100)
-                    if first_run["duration_sec"] > 0 else 0,
+              "duration_reduction_pct": round(
+                    (
+                        (first_run["duration_sec"] - last_run["duration_sec"]) 
+                        / first_run["duration_sec"] 
+                        * 100
+                    ) if first_run["duration_sec"] > 0 else 0,
                     1
                 ),
                "retry_reduction": max(0, first_run.get("total_retries", 0) - last_run.get("total_retries", 0)),
@@ -235,7 +249,7 @@ class Week3Evaluator:
 
 
 # Global evaluator instance
-
+week3_evaluator = Week3Evaluator()
 
 # Standalone test function
 async def test_week3_evaluation():
@@ -259,7 +273,5 @@ async def test_week3_evaluation():
         orchestrator_func=mock_orchestrator
     )
 
-
 if __name__ == "__main__":
     asyncio.run(test_week3_evaluation())
-    week3_evaluator = Week3Evaluator()

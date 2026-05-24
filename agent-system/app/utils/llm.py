@@ -62,10 +62,11 @@ rate_limiter = RateLimiter(max_calls=10, period_seconds=60)
 # Anthropic Client (Initialized Once)
 # -------------------------------
 
-_client = Anthropic(
-    api_key=os.getenv("ANTHROPIC_API_KEY")
-)
+_api_key = os.getenv("ANTHROPIC_API_KEY")
+if not _api_key:
+    raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
 
+_client = Anthropic(api_key=_api_key)
 
 # -------------------------------
 # Helpers

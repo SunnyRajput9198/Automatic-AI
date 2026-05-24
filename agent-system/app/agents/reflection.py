@@ -140,7 +140,7 @@ Failed calculation with retries:
   ],
   "pattern_quality": 0.6
 }
-
+"suggested_action": "optional next action recommendation"
 RESPOND ONLY WITH JSON."""
 
     def __init__(self, model: str = "claude-haiku-4-5-20251001"):

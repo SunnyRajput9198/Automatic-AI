@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from typing import List, Optional
 import uuid
 import structlog
-from app.db.base import Base
 from app.db.session import get_db
 from app.models.task import Task, Step, TaskStatus
 from app.orchestrator.loop_v3 import execute_task_v3 as execute_task
@@ -13,7 +12,7 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 class TaskCreate(BaseModel):
-    task: str
+    prompt: str
 
 class StepResponse(BaseModel):
     id: str
@@ -48,7 +47,7 @@ async def create_task(
     
     task = Task(
         id=task_id,
-        user_input=task_data.task,
+        user_input=task_data.prompt,
         status=TaskStatus.PENDING
     )
     
@@ -56,7 +55,7 @@ async def create_task(
     db.commit()
     db.refresh(task)
     
-    logger.info("task_created", task_id=task_id, user_input=task_data.task)
+    logger.info("task_created", task_id=task_id, user_input=task_data.prompt)
     
     # Execute task in background
     background_tasks.add_task(execute_task, task_id)
@@ -64,7 +63,7 @@ async def create_task(
     
     return TaskResponse(
         task_id=task.id,
-        user_input=task.user_input,
+       user_input=task_data.prompt,
         status=task.status,
         created_at=task.created_at.isoformat(),
         steps=[]

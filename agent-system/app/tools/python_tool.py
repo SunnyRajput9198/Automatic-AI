@@ -78,7 +78,7 @@ class PythonExecutor(Tool):
                 ["python", temp_file],
                 capture_output=True,
                 text=True,
-                timeout=30,  # 30 second timeout
+                timeout=10,  # 10 second timeout
                 cwd=shared_workspace  # ← THIS IS THE KEY FIX
             )
             
@@ -111,7 +111,7 @@ class PythonExecutor(Tool):
             return ToolResult(
                 success=False,
                 output="",
-                error="Execution timed out after 30 seconds"
+                error="Execution timed out after 10 seconds"
             )
         
         except Exception as e:

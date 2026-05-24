@@ -126,7 +126,32 @@ class FileManager:
         except Exception as e:
             logger.error("file_manager_delete_error", error=str(e))
             return False
-    
+    def append_file(
+        self,
+        filename: str,
+        content: str,
+        workspace: str = "shared"
+    ) -> bool:
+        """Append content to existing file, creates file if not exists"""
+        if workspace == "shared":
+            filepath = self.shared_workspace / filename
+        else:
+            workspace_dir = self.base_dir / workspace
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            filepath = workspace_dir / filename
+
+        try:
+            with open(filepath, "a") as f:
+                f.write(content)
+            logger.info(
+                "file_manager_appended",
+                filename=filename,
+                size=len(content)
+            )
+            return True
+        except Exception as e:
+            logger.error("file_manager_append_error", error=str(e))
+            return False
     def cleanup_task_workspace(self, task_id: str) -> bool:
         """Remove all files from task-specific workspace"""
         workspace = self.base_dir / task_id

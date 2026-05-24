@@ -365,7 +365,7 @@ async def execute_task_v3(task_id: str) -> None:
                         # FIX: WebSearchTool sets metadata['source']='DuckDuckGo',
                         # not metadata['tool_name']='web_search'.
                         # The old check was always False — searches were never counted.
-                        if tool_result.metadata.get("source") == "DuckDuckGo":
+                        if tool_result.metadata.get("source") == "wikipedia + arxiv":
                             global_cost_tracker.record_search()
 
                         step.result = tool_result.output
@@ -380,11 +380,8 @@ async def execute_task_v3(task_id: str) -> None:
                             step_number=step_number,
                             success=tool_result.success,
                         )
-
-                        if not tool_result.success and tool_result.metadata.get("tool_name"):
-                            tool_failure_memory.record_failure(
-                                tool_result.metadata["tool_name"]
-                            )
+                        if tool_result.success and tool_result.metadata.get("tool_name"):
+                            tool_failure_memory.reset_failures(tool_result.metadata["tool_name"])
 
                         t0 = time.time()
                         evaluation = await critic.evaluate(

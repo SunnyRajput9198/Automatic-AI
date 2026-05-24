@@ -75,6 +75,15 @@ class RecoveryManager:
                 action="retry_with_smaller_prompt",
                 reason=reason
             )
+            
+        if any(k in all_text for k in [
+        "skip", "not necessary", "optional", "irrelevant"
+            ]):
+                logger.info("recovery_skip_step", reason=reason)
+                return RecoveryDecision(
+                    action="skip_step",
+                    reason=reason
+                )
 
         # Tool failure / tool not found → switch to a different agent
         if any(k in all_text for k in [

@@ -17,5 +17,13 @@
     "successes": 1,
     "failures": 0,
     "success_rate": 1.0
+  },
+  "researcher_001": {
+    "name": "researcher_001",
+    "role": "researcher",
+    "calls": 2,
+    "successes": 2,
+    "failures": 0,
+    "success_rate": 1.0
   }
 }

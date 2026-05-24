@@ -16,13 +16,17 @@ class PlanStep(BaseModel):
 
 class PlannerAgent:
     """
-    Converts high-level user tasks into concrete, executable steps.
+    Converts user tasks into concrete, executable steps for the orchestrator.
 
-    CRITICAL RULES:
-    - Steps must be atomic (one clear action)
-    - Steps must be tool-executable (no vague instructions)
-    - No step should depend on human imagination
-    - Each step must have clear success criteria
+    GUARANTEES:
+    - Maximum 10 steps per plan
+    - Every step has a non-empty instruction
+    - Steps are ordered by dependency
+    - No vague or human-imagination steps
+
+    METHODS:
+    - plan()   : create fresh plan from user task
+    - replan() : create new plan when a step fails, avoiding the error
     """
 
     SYSTEM_PROMPT = """You are a precise task planning agent. Your job is to break down user requests into atomic, executable steps.
@@ -114,7 +118,12 @@ DEFAULT INTERPRETATION:
 - "find" = web_search (unless clearly about files)
 - "what is" = web_search
 - "look up" = web_search
-
+REPLAN RULES (when a step failed):
+- Never repeat the exact same approach that failed
+- If python_executor failed → try file_write to save code instead
+- If web_search failed → try web_fetch with a direct URL
+- If file_read failed → try file_list first to verify file exists
+- Always address the specific error in your new plan
 RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
 """
     def __init__(self, model: str = "claude-haiku-4-5-20251001"):
@@ -156,7 +165,7 @@ Return JSON only.
                 )
 
             plan_data = json.loads(response_text[start : end + 1])
-            steps = plan_data.get("steps", [])
+            steps = plan_data.get("steps", [])[:10]
 
             logger.info("planner_completed", num_steps=len(steps))
 
@@ -236,10 +245,24 @@ Return JSON only.
                 )
 
             plan_data = json.loads(response_text[start : end + 1])
-            steps = plan_data.get("steps", [])
+            steps = plan_data.get("steps", [])[:10] # enforce max 10 steps
+            validated_steps: List[Dict] = []
+            for idx, step in enumerate(steps, start=1):
+                instruction = step.get("instruction")
+                if not instruction:
+                    logger.warning("planner_replan_invalid_step", step=step)
+                    continue
+                validated_steps.append({
+                    "step": step.get("step", idx),
+                    "instruction": instruction,
+                    "reasoning": step.get("reasoning", ""),
+                })
 
-            logger.info("planner_replan_completed", num_steps=len(steps))
-            return steps
+            if not validated_steps:
+                raise ValueError("Replan produced no valid steps")
+
+            logger.info("planner_replan_completed", num_steps=len(validated_steps))
+            return validated_steps
 
         except Exception as e:
             logger.error("planner_replan_error", error=str(e))

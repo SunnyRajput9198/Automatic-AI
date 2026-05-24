@@ -42,6 +42,7 @@ async def root():
         "message": "Autonomous Agent System API",
         "version": "1.0.0",
         "endpoints": {
+        "health": "GET /health",
             "create_task": "POST /api/v1/tasks",
             "get_task": "GET /api/v1/tasks/{task_id}",
             "list_tasks": "GET /api/v1/tasks"

@@ -198,7 +198,7 @@ RESPOND ONLY WITH VALID JSON.
                     output="",
                     error="python_executor requires a 'code' parameter.",
                 )
-            if code.lower().startswith(("create a", "write a", "make a", "build a")):
+            if code.lower().startswith(("create a", "write a", "make a", "build a", "generate a", "produce a")):
                 logger.warning("executor_invalid_code_input", code_preview=code[:100])
                 return ToolResult(
                     success=False,
@@ -239,7 +239,7 @@ RESPOND ONLY WITH VALID JSON.
         indented outside both methods entirely.
         """
         tools_desc = self._get_tools_description()
-        system_prompt = self.SYSTEM_PROMPT.format(tools_description=tools_desc)
+        system_prompt = self.SYSTEM_PROMPT.replace("{tools_description}", tools_desc)
 
         context_str = ""
         if context:

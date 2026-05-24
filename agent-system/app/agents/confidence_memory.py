@@ -313,8 +313,22 @@ class ConfidenceMemory:
 
         except Exception as e:
             logger.error("confidence_recall_error", error=str(e))
-            # Fallback: return top-scored candidates without LLM filtering
             fallback = scored_memories[:limit]
+            
+            # update usage counters even on fallback
+            fallback_ids = [m["id"] for m in fallback]
+            if fallback_ids:
+                matched_objs = (
+                    self.db.query(Memory)
+                    .filter(Memory.id.in_(fallback_ids))
+                    .all()
+                )
+                now = datetime.utcnow()
+                for mem_obj in matched_objs:
+                    mem_obj.times_referenced = int(mem_obj.times_referenced or 0) + 1
+                    mem_obj.last_used = now
+                self.db.commit()
+            
             avg_conf = (
                 sum(m["confidence"] for m in fallback) / len(fallback)
                 if fallback

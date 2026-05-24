@@ -16,7 +16,7 @@ class ShellExecutor(Tool):
     - Only commands in ALLOWED_COMMANDS can run (checked on the base word).
     - Execution is capped at 30 seconds.
     - Working directory is set to the shared workspace so file operations
-      land in the right place.
+    land in the right place.
     """
 
     ALLOWED_COMMANDS = {
@@ -49,6 +49,11 @@ class ShellExecutor(Tool):
         }
 
     def _is_command_safe(self, command: str) -> bool:
+        # block command chaining characters
+        dangerous_chars = [";", "&&", "||", "|", "`", "$(" ]
+        for char in dangerous_chars:
+            if char in command:
+                return False
         parts = command.strip().split()
         return bool(parts) and parts[0] in self.ALLOWED_COMMANDS
 
@@ -81,11 +86,11 @@ class ShellExecutor(Tool):
 
         try:
             result = subprocess.run(
-                command,
-                shell=True,
+                command.split(),# split the command into a list of arguments
+                shell=False,# tell the subprocess to treat the command as a list of arguments
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=10,
                 cwd=shared_workspace,
             )
 

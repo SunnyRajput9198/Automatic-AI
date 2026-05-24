@@ -62,7 +62,15 @@ class SearchDecider:
                 reason="Reasoner determined search is needed"
             )
             return True, "Reasoner determined search is needed"
-        
+        # Rule 1.5: No-search indicators override search indicators
+        for indicator in self.NO_SEARCH_INDICATORS:
+            if indicator in task_lower:
+                logger.info(
+                    "search_decision_no_keyword_override",
+                    decision=False,
+                    indicator=indicator
+                )
+            return False, f"Task is internal operation: '{indicator}'"
         # Rule 2: Strong search indicators in task
         for indicator in self.SEARCH_INDICATORS:
             if indicator in task_lower:
@@ -72,16 +80,6 @@ class SearchDecider:
                     indicator=indicator
                 )
                 return True, f"Task contains search indicator: '{indicator}'"
-        
-        # Rule 3: Strong no-search indicators
-        for indicator in self.NO_SEARCH_INDICATORS:
-            if indicator in task_lower:
-                logger.info(
-                    "search_decision_no_keyword",
-                    decision=False,
-                    indicator=indicator
-                )
-                return False, f"Task is internal operation: '{indicator}'"
         
         # Rule 4: Low confidence from reasoner
         if reasoning.confidence < self.CONFIDENCE_THRESHOLD:

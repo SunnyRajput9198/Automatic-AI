@@ -4,9 +4,8 @@ import structlog
 from typing import Dict
 
 logger = structlog.get_logger()
-
-MEMORY_PATH = "workspace/agent_performance.json"
-
+WORKSPACE = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared")
+MEMORY_PATH = os.path.join(WORKSPACE, "agent_performance.json")
 
 class AgentPerformanceMemory:
     """
@@ -25,7 +24,7 @@ class AgentPerformanceMemory:
             self.memory = {}
 
     def save(self):
-        os.makedirs("workspace", exist_ok=True)
+        os.makedirs(WORKSPACE, exist_ok=True)
         with open(MEMORY_PATH, "w") as f:
             json.dump(self.memory, f, indent=2)
 

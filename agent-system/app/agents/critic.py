@@ -93,20 +93,12 @@ RESPOND ONLY WITH JSON.
                 suggestions="",
             )
 
-        # Fail fast if tool keeps failing
-        if not tool_result.success and retry_count >= self.MAX_RETRIES - 1:
-            return CriticResult(
-                verdict=Verdict.FAIL,
-                reason="Tool failed repeatedly and is no longer retryable",
-                suggestions="",
-            )
-
         user_prompt = f"""STEP INSTRUCTION:
 {step_instruction}
 
 TOOL EXECUTION:
 - Success: {tool_result.success}
-- Output: {tool_result.output[:300] if tool_result.output else "(empty)"}
+- Output: {tool_result.output[:600] if tool_result.output else "(empty)"}
 - Error: {tool_result.error if tool_result.error else "(none)"}
 - Metadata: {json.dumps(tool_result.metadata)}
 

@@ -5,7 +5,8 @@ from typing import Dict
 
 logger = structlog.get_logger()
 
-PREF_PATH = "workspace/agent_preferences.json"
+WORKSPACE = os.getenv("SHARED_WORKSPACE", "/app/workspace/shared")
+PREF_PATH = os.path.join(WORKSPACE, "agent_preferences.json")
 
 
 class AgentPreferenceMemory:
@@ -29,7 +30,7 @@ class AgentPreferenceMemory:
 
 
     def _save(self):
-        os.makedirs("workspace", exist_ok=True)
+        os.makedirs(WORKSPACE, exist_ok=True)
         with open(PREF_PATH, "w") as f:
             json.dump(self.preferences, f, indent=2)
 
@@ -49,4 +50,4 @@ class AgentPreferenceMemory:
         return self.preferences.get(key)
 
     def _task_key(self, task: str) -> str:
-        return task.lower().split(" ")[0:4].__str__()
+        return " ".join(task.lower().split()[:4])

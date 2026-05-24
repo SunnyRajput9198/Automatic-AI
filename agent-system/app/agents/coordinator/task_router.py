@@ -49,7 +49,7 @@ class TaskRouter:
         self.pref_memory = AgentPreferenceMemory()
 
     
-    def route(self, task: str) -> RoutingDecision:
+    async def route(self, task: str) -> RoutingDecision:
         """
         Route task to appropriate agents.
         
@@ -104,9 +104,25 @@ class TaskRouter:
                 break
         
         # Default to engineer if no matches
+       # No keyword match — ask Claude
         if not agents_needed:
-            agents_needed.append("engineer")
-            keywords_found.append("default:engineer")
+            logger.info("router_no_keyword_match_using_reasoner", task=task)
+            from app.agents.reasoner import ReasonerAgent
+            reasoner = ReasonerAgent()
+            reasoning = await reasoner.reason(task)
+            
+            # map problem_type to agent
+            type_to_agent = {
+                "file_operation": "engineer",
+                "web_research": "researcher",
+                "calculation": "engineer",
+                "data_transformation": "engineer",
+                "system_operation": "engineer",
+                "mixed": "researcher",
+            }
+            agent = type_to_agent.get(reasoning.problem_type, "researcher")
+            agents_needed.append(agent)
+            keywords_found.append(f"reasoner:{reasoning.problem_type}")
         
         # Determine execution mode
         execution_mode = self._determine_execution_mode(task_lower, agents_needed)

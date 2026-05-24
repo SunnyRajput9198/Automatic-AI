@@ -213,3 +213,61 @@ class FileDeleteTool(Tool):
             output=f"Successfully deleted {filename}",
             metadata={"filename": filename}
         )
+class FileAppendTool(Tool):
+    """Append content to an existing file in the persistent workspace"""
+    
+    def __init__(self, file_manager: FileManager):
+        self.file_manager = file_manager
+    
+    @property
+    def name(self) -> str:
+        return "file_append"
+    
+    @property
+    def description(self) -> str:
+        return "Append content to an existing file. Creates file if it does not exist."
+    
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "Name of the file to append to"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to append to the file"
+                }
+            },
+            "required": ["filename", "content"]
+        }
+    
+    async def run(self, **kwargs) -> ToolResult:
+        filename = kwargs.get("filename", "")
+        content = kwargs.get("content", "")
+        
+        if not filename:
+            return ToolResult(
+                success=False,
+                output="",
+                error="Filename is required"
+            )
+        
+        logger.info("file_append_running", filename=filename, size=len(content))
+        
+        success = self.file_manager.append_file(filename, content)
+        
+        if not success:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Failed to append to '{filename}'"
+            )
+        
+        return ToolResult(
+            success=True,
+            output=f"Successfully appended {len(content)} characters to {filename}",
+            metadata={"filename": filename, "size": len(content)}
+        )

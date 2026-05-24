@@ -1,5 +1,6 @@
 import time
 import json
+import os
 import structlog
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -8,7 +9,7 @@ from datetime import datetime
 
 logger = structlog.get_logger()
 
-
+COSTS_DIR = os.getenv("COSTS_DIR", "/app/costs")
 @dataclass
 class LLMCall:
     """Single LLM call record"""
@@ -68,8 +69,8 @@ class CostTracker:
     # Rough token estimates (very approximate)
     TOKENS_PER_CHAR = 0.25  # ~4 chars per token
     COST_PER_1M_TOKENS = {
-        "claude-haiku-4-5-20251001": 0.25,  # $0.25 per 1M input tokens
-        "claude-sonnet-4-5-20250929": 3.00,  # $3.00 per 1M input tokens
+        "claude-haiku-4-5-20251001": 0.25,
+        "claude-sonnet-4-5-20250514": 3.00,
     }
     
     def __init__(self):
@@ -77,7 +78,7 @@ class CostTracker:
         self.completed_tasks: List[TaskCost] = []
         
         # Create cost tracking directory
-        Path("costs").mkdir(exist_ok=True)
+        Path(COSTS_DIR).mkdir(exist_ok=True)
     
     def start_task(self, task_id: str):
         """Begin tracking a new task"""
@@ -207,7 +208,7 @@ class CostTracker:
     
     def _export_task_cost(self, task_cost: TaskCost):
         """Export task cost to JSON file"""
-        filename = f"costs/task_{task_cost.task_id}.json"
+        filename = f"{COSTS_DIR}/task_{task_cost.task_id}.json"
         
         # Convert to dict
         data = asdict(task_cost)

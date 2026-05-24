@@ -21,25 +21,22 @@ class CoordinationResult(BaseModel):
 
 class CoordinatorAgent:
     """
-    Coordinates multiple specialist agents.
-    
-    WORKFLOW:
-    1. Analyze task
-    2. Route to agents
-    3. Execute agents (parallel or sequential)
-    4. Aggregate results
-    5. Return coordination result
-    
-    DAY 1 VERSION:
-    - Basic routing
-    - Sequential execution only
-    - Simple result aggregation
-    
-    Later days will add:
-    - Parallel execution
-    - Multi-plan generation
-    - Self-healing recovery
-    """
+Coordinates multiple specialist agents.
+
+WORKFLOW:
+1. Route task to appropriate agents (keyword match or ReasonerAgent fallback)
+2. Execute agents in parallel or sequential mode
+3. Aggregate results into final output
+
+EXECUTION MODES:
+- parallel: agents run simultaneously via asyncio.gather
+- sequential: agents run one after another, passing context forward
+
+AGENTS SUPPORTED:
+- researcher: web research via Wikipedia + ArXiv
+- engineer: Python execution, file operations
+- writer: content generation
+"""
     
     def __init__(self, available_agents: Dict[str, BaseAgent]):
         """
@@ -68,7 +65,7 @@ class CoordinatorAgent:
         context = context or {}
 
         # STEP 1: Route task
-        routing = self.router.route(task)
+        routing = await self.router.route(task)
 
         logger.info(
             "coordinator_routed",
@@ -86,48 +83,48 @@ class CoordinatorAgent:
         if routing.execution_mode == "parallel":
             logger.info("coordinator_parallel_execution")
 
-        coroutines = []
-        roles = []
+            coroutines = []
+            roles = []
 
-        for agent_role in routing.agents_needed:
-            agent = self.available_agents.get(agent_role)
-            if agent:
-                coroutines.append(agent.execute(task, execution_context))
-                roles.append(agent_role)
+            for agent_role in routing.agents_needed:
+                agent = self.available_agents.get(agent_role)
+                if agent:
+                    coroutines.append(agent.execute(task, execution_context))
+                    roles.append(agent_role)
 
-        results = await asyncio.gather(*coroutines, return_exceptions=True)
+            results = await asyncio.gather(*coroutines, return_exceptions=True)
 
-        for role, result in zip(roles, results):
-            # Guard against exceptions first
-            if isinstance(result, BaseException):
+            for role, result in zip(roles, results):
+                # Guard against exceptions first
+                if isinstance(result, BaseException):
+                    agent_results.append({
+                        "agent": role,
+                        "role": role,
+                        "success": False,
+                        "output": "",
+                        "error": str(result)
+                    })
+                    continue
+
+                # Safe to access AgentResult attributes here
                 agent_results.append({
-                    "agent": role,
+                    "agent": result.agent_name,
                     "role": role,
-                    "success": False,
-                    "output": "",
-                    "error": str(result)
+                    "success": result.success,
+                    "output": result.output,
+                    "confidence": result.confidence,
+                    "metadata": result.metadata,
+                    "errors": result.errors
                 })
-                continue
 
-            # Safe to access AgentResult attributes here
-            agent_results.append({
-                "agent": result.agent_name,
-                "role": role,
-                "success": result.success,
-                "output": result.output,
-                "confidence": result.confidence,
-                "metadata": result.metadata,
-                "errors": result.errors
-            })
+                # Update memory and context only for non-exception results
+                agent = self.available_agents.get(role)
+                if agent:
+                    self.agent_memory.update(agent.name, agent.get_stats())
 
-            # Update memory and context only for non-exception results
-            agent = self.available_agents.get(role)
-            if agent:
-                self.agent_memory.update(agent.name, agent.get_stats())
-
-            if result.success:
-                execution_context[f"{role}_output"] = result.output
-                execution_context[f"{role}_success"] = True
+                if result.success:
+                    execution_context[f"{role}_output"] = result.output
+                    execution_context[f"{role}_success"] = True
 
         # ==================================================
         # 🧭 SEQUENTIAL EXECUTION (Day 1–2 behavior)
