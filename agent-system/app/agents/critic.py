@@ -5,9 +5,8 @@ import structlog
 from typing import Dict, Any
 from enum import Enum
 from app.utils.json_parser import extract_json
-from app.utils.llm import call_llm, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system, call_llm_with_system
 from app.tools.base import ToolResult
-
+from app.utils.llm import call_groq_with_system
 logger = structlog.get_logger()
 
 
@@ -68,8 +67,7 @@ BE STRICT BUT FAIR:
 RESPOND ONLY WITH JSON.
 """
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001"):
-        # Claude is excellent for critic / judgment tasks
+    def __init__(self, model: str = "llama-3.1-8b-instant"):
         self.model = model
 
     async def evaluate(
@@ -105,11 +103,11 @@ TOOL EXECUTION:
 
 RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
 
-   Evaluate if this step succeeded and return verdict JSON.
+    Evaluate if this step succeeded and return verdict JSON.
 """
 
         try:
-            response = await call_llm_with_system(
+            response = await call_groq_with_system(
     system_prompt=self.SYSTEM_PROMPT,
     user_prompt=user_prompt,
     model=self.model,

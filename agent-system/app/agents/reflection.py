@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from app.utils.json_parser import extract_json
 
-from app.utils.llm import call_llm, call_llm_with_system
+from app.utils.llm import call_groq_with_system
 from app.models.task import Task
 
 logger = structlog.get_logger()
@@ -144,8 +144,8 @@ Failed calculation with retries:
 "suggested_action": "optional next action recommendation"
 RESPOND ONLY WITH JSON."""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001"):
-        self.model = model
+    def __init__(self, model: str = "llama-3.3-70b-versatile"):
+      self.model = model
     
     async def reflect(
         self,
@@ -217,7 +217,7 @@ Be specific and actionable. Return JSON only."""
         
         response_text = ""
         try:
-            response = await call_llm_with_system(
+            response = await call_groq_with_system(
     system_prompt=self.SYSTEM_PROMPT,
     user_prompt=user_prompt,
     model=self.model,

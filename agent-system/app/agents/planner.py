@@ -3,8 +3,7 @@ import structlog
 from typing import List, Dict
 from pydantic import BaseModel
 from app.utils.json_parser import extract_json
-from app.utils.llm import call_llm, call_llm_with_system
-
+from app.utils.llm import call_groq_with_system
 logger = structlog.get_logger()
 
 
@@ -135,8 +134,7 @@ REPLAN RULES (when a step failed):
 - If file_read failed → try file_list first to verify file exists
 - Always address the specific error in your new plan
 """
-    def __init__(self, model: str = "claude-haiku-4-5-20251001"):
-        # Claude Sonnet is excellent for planning & decomposition
+    def __init__(self, model: str = "llama-3.1-8b-instant"):
         self.model = model
 
     async def plan(self, user_task: str) -> List[Dict]:
@@ -154,7 +152,7 @@ Return JSON only.
 """
         response=""
         try:
-            response = await call_llm_with_system(
+            response = await call_groq_with_system(
     system_prompt=self.SYSTEM_PROMPT,
     user_prompt=user_prompt,
     model=self.model,
@@ -226,7 +224,7 @@ Return JSON only.
 """
 
         try:
-            response = await call_llm_with_system(
+            response = await call_groq_with_system(
     system_prompt=self.REPLAN_SYSTEM_PROMPT,
     user_prompt=user_prompt,
     model=self.model,
