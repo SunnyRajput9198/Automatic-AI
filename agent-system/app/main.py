@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 import structlog
-
+from fastapi.middleware.cors import CORSMiddleware
 from app.db.session import init_db
 from app.api import tasks
 from app.api import health
@@ -34,6 +34,17 @@ app = FastAPI(
 
 app.include_router(health.router)
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",   # React/Next frontend
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")

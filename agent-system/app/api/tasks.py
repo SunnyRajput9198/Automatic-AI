@@ -128,3 +128,11 @@ async def list_tasks(
         )
         for task in tasks
     ]
+    
+@router.get("/files")
+async def list_files():
+    """List all files in the shared workspace"""
+    from app.utils.file_manager import FileManager
+    fm = FileManager()
+    files = fm.list_files()
+    return {"files": sorted(files), "count": len(files)}

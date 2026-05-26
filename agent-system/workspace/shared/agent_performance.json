@@ -3,9 +3,9 @@
     "name": "researcher_001",
     "role": "researcher",
     "calls": 1,
-    "successes": 1,
-    "failures": 0,
-    "success_rate": 1.0
+    "successes": 0,
+    "failures": 1,
+    "success_rate": 0.0
   },
   "engineer_001": {
     "name": "engineer_001",
