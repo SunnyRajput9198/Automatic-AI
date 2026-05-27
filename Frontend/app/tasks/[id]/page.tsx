@@ -117,6 +117,16 @@ function StepCard({ step }: { step: Step }) {
     </div>
   );
 }
+function extractFilesFromSteps(steps: Step[]): string[] {
+  const files: string[] = [];
+  for (const step of steps) {
+    if (step.result) {
+      const match = step.result.match(/wrote \d+ characters to (.+)/);
+      if (match) files.push(match[1].trim());
+    }
+  }
+  return files;
+}
 
 export default function TaskPage() {
   const params = useParams();
@@ -126,7 +136,15 @@ export default function TaskPage() {
   const [task, setTask] = useState<Task | null>(null);
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
+  const [selectedFile, setSelectedFile] = useState<{ name: string, content: string } | null>(null);
 
+  const openFile = async (filename: string) => {
+    const res = await fetch(`${API_BASE_URL}/files/${filename}`);
+    if (res.ok) {
+      const content = await res.text();
+      setSelectedFile({ name: filename, content });
+    }
+  };
   const fetchTask = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/tasks/${taskId}`);
@@ -139,21 +157,7 @@ export default function TaskPage() {
   }, [taskId]);
   const [files, setFiles] = useState<string[]>([]);
 
-  const fetchFiles = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/files`);
-      if (res.ok) {
-        const data = await res.json();
-        setFiles(data.files || []);
-      }
-    } catch { }
-  }, []);
-
-  useEffect(() => {
-    if (task?.status === 'COMPLETED') {
-      fetchFiles();
-    }
-  }, [task?.status, fetchFiles]);
+  const taskFiles = task ? extractFilesFromSteps(task.steps) : [];
 
   // Poll while task is running
   useEffect(() => {
@@ -303,7 +307,7 @@ export default function TaskPage() {
             </>
           )}
           {/* Files Section */}
-          {files.length > 0 && (
+          {taskFiles.length > 0 && (
             <div
               style={{
                 marginTop: 32,
@@ -331,10 +335,10 @@ export default function TaskPage() {
                   gap: 12,
                 }}
               >
-                {files.map((file, index) => (
+                {taskFiles.map((file, index) => (
                   <a
                     key={index}
-                    href={`${API_BASE_URL}/files/${file}`}
+                    onClick={(e) => { e.preventDefault(); openFile(file); }}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{
@@ -376,6 +380,39 @@ export default function TaskPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#9898a8' }}>
               <Loader2 size={16} style={{ animation: 'spin 0.7s linear infinite' }} />
               <span style={{ fontSize: 13 }}>Loading task…</span>
+            </div>
+          )}
+          {selectedFile && (
+            <div style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              zIndex: 100, padding: 24,
+            }} onClick={() => setSelectedFile(null)}>
+              <div style={{
+                background: '#16161a', border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: 12, width: '100%', maxWidth: 720, maxHeight: '80vh',
+                overflow: 'hidden', display: 'flex', flexDirection: 'column',
+              }} onClick={e => e.stopPropagation()}>
+                <div style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.07)',
+                }}>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: '#f0f0f2' }}>
+                    {selectedFile.name}
+                  </span>
+                  <button onClick={() => setSelectedFile(null)} style={{
+                    background: 'none', border: 'none', color: '#9898a8',
+                    cursor: 'pointer', fontSize: 18, lineHeight: 1,
+                  }}>×</button>
+                </div>
+                <pre style={{
+                  padding: 20, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace',
+                  fontSize: 12, color: '#9898a8', lineHeight: 1.7, margin: 0,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                }}>
+                  {selectedFile.content}
+                </pre>
+              </div>
             </div>
           )}
         </div>

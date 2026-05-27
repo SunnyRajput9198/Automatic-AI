@@ -136,3 +136,13 @@ async def list_files():
     fm = FileManager()
     files = fm.list_files()
     return {"files": sorted(files), "count": len(files)}
+
+@router.get("/files/{filename}")
+async def get_file(filename: str):
+    from app.utils.file_manager import FileManager
+    from fastapi.responses import PlainTextResponse
+    fm = FileManager()
+    content = fm.read_file(filename)
+    if content is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return PlainTextResponse(content=content)
