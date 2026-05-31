@@ -179,7 +179,7 @@ Return JSON only."""
 )
 
             # Parse response
-            response_text = response.strip()
+            response_text = (response or "").strip()
 
             # Handle markdown code blocks
             if response_text.startswith("```"):

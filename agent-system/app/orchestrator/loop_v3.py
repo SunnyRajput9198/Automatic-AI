@@ -11,6 +11,7 @@ from app.orchestrator.recovery_manager import RecoveryManager
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
 from app.models.memory import TaskContext
+from app.utils.websocket_manager import ws_manager
 from app.agents.planner import PlannerAgent
 from app.agents.executor import ExecutorAgent
 from app.agents.critic import CriticAgent, Verdict
@@ -157,7 +158,7 @@ async def execute_task_v3(task_id: str) -> None:
                 reasoning_output = await reasoner.reason(task_description=task.user_input)
                 # FIX: .model_dump() not .dict() — pydantic==2.5.3 (v2)
                 reasoning_dict = reasoning_output.model_dump()
-
+                
                 global_cost_tracker.record_llm_call(
                     agent="reasoner",
                     model=reasoner.model,
@@ -180,6 +181,12 @@ async def execute_task_v3(task_id: str) -> None:
                     confidence=reasoning_output.confidence,
                     strategy=reasoning_output.strategy,
                 )
+                await ws_manager.emit(task_id, {
+                    "phase": "reasoning",
+                    "status": "completed",
+                    "problem_type": reasoning_output.problem_type,
+                    "confidence": reasoning_output.confidence
+                })
             except Exception as e:
                 logger.error("orchestrator_reasoning_failed", error=str(e))
 
@@ -212,6 +219,11 @@ async def execute_task_v3(task_id: str) -> None:
                     agents_used=coordination_result.total_agents,
                     successful=coordination_result.successful_agents,
                 )
+                await ws_manager.emit(task_id, {
+                    "phase": "coordination",
+                    "status": "completed",
+                    "agents_used": coordination_result.total_agents
+                })
             except Exception as e:
                 logger.error("orchestrator_coordination_failed", error=str(e))
 
@@ -317,6 +329,11 @@ async def execute_task_v3(task_id: str) -> None:
             }
 
             logger.info("orchestrator_plan_created", num_steps=len(plan))
+            await ws_manager.emit(task_id, {
+                "phase": "planning",
+                "status": "completed",
+                "steps": [{"number": s["step"], "instruction": s["instruction"]} for s in plan]
+            })
             task_metrics["total_steps"] = len(plan)
 
             # ================================================================
@@ -333,6 +350,12 @@ async def execute_task_v3(task_id: str) -> None:
                     continue
 
                 logger.info("orchestrator_executing_step", step_number=step_number)
+                await ws_manager.emit(task_id, {
+                        "phase": "step",
+                        "status": "running",
+                        "step_number": step_number,
+                        "instruction": step.instruction
+                    })
 
                 max_retries = 2
                 retry_count = 0
@@ -421,6 +444,12 @@ async def execute_task_v3(task_id: str) -> None:
                             step.status = StepStatus.COMPLETED
                             step.completed_at = datetime.utcnow()
                             step_succeeded = True
+                            await ws_manager.emit(task_id, {
+                                "phase": "step",
+                                "status": "completed",
+                                "step_number": step_number,
+                                "result": tool_result.output[:300]
+                            })
 
                             context[f"step_{step_number}_output"] = tool_result.output
                             context[f"step_{step_number}_success"] = True
@@ -559,6 +588,11 @@ async def execute_task_v3(task_id: str) -> None:
                         step.error = str(e)
                         step.status = StepStatus.FAILED
                         task.status = TaskStatus.FAILED
+                        await ws_manager.emit(task_id, {
+                            "phase": "failed",
+                            "status": "failed",
+                            "error": str(e)
+                        })
                         task.error_message = f"Step {step_number} crashed: {e}"
                         task.completed_at = datetime.utcnow()
                         task_metrics["failures"].append({
@@ -598,6 +632,10 @@ async def execute_task_v3(task_id: str) -> None:
             db.commit()
 
             logger.info("orchestrator_task_completed", task_id=task_id)
+            await ws_manager.emit(task_id, {
+    "phase": "completed",
+    "status": "completed"
+})
 
             try:
                 best_agent = context.get("recovered_by_agent", "executor")

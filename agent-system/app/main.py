@@ -6,7 +6,8 @@ from app.db.session import init_db
 from app.api import tasks
 from app.api import health
 from app.core.config import settings
-
+from fastapi import WebSocket, WebSocketDisconnect
+from app.utils.websocket_manager import ws_manager
 logger = structlog.get_logger()
 
 
@@ -59,3 +60,13 @@ async def root():
             "list_tasks": "GET /api/v1/tasks"
         }
     }
+
+@app.websocket("/ws/{task_id}")
+async def websocket_endpoint(websocket: WebSocket, task_id: str):
+    await ws_manager.connect(task_id, websocket)
+    try:
+        while True:
+            # Keep connection alive, just receive any pings
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(task_id)

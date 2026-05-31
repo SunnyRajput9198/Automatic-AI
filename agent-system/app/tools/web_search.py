@@ -37,37 +37,79 @@ class WebSearchTool(Tool):
             },
             "required": ["query"],
         }
-
+    def _is_technical_query(self, query: str) -> bool:
+        """
+        Returns True if query is technical/research — use all sources.
+        Returns False if general knowledge — use only Wikipedia.
+        """
+        general_indicators = [
+            "what is", "what are", "who is", "who are",
+            "explain", "tell me about", "how does", "why is",
+            "difference between", "compare", "vs", "versus",
+            "define", "definition", "meaning of", "introduction to"
+        ]
+        
+        technical_indicators = [
+            "research", "paper", "algorithm", "implementation",
+            "architecture", "framework", "library", "model",
+            "dataset", "benchmark", "sota", "state of the art",
+            "arxiv", "pubmed", "github", "code", "repository"
+        ]
+        
+        query_lower = query.lower()
+    
+    # If explicitly technical — use all sources
+        for indicator in technical_indicators:
+            if indicator in query_lower:
+                return True
+        
+        # If general question — Wikipedia only
+        for indicator in general_indicators:
+            if indicator in query_lower:
+                return False
+        
+        # Default — use all sources
+        return True
     async def _wiki_search(self, query: str) -> list[dict]:
         async with httpx.AsyncClient(
             timeout=10,
             headers={"User-Agent": "ResearchAgent/1.0 (educational project)"},
         ) as client:
+            # Step 1 — search for the right page
+            search_resp = await client.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": query,
+                    "srlimit": 1,
+                    "format": "json",
+                }
+            )
+            if search_resp.status_code != 200:
+                return []
 
-            # fix spaces → underscores
-            slug = query.strip().replace(
-                " ", "_"
-            )  # if koi blank soace aae to _ dal do like machine_learning if _ ni hua to
+            hits = search_resp.json().get("query", {}).get("search", [])
+            if not hits:
+                return []
+
+            # Step 2 — get summary of top result
+            title = hits[0]["title"]
+            slug = title.replace(" ", "_")
 
             response = await client.get(
                 f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
             )
-
-            # handle page not found
             if response.status_code != 200:
                 return []
 
             data = response.json()
-            return [
-                {
-                    "source": "Wikipedia",
-                    "title": data.get("title", ""),
-                    "content": data.get("extract", ""),
-                    "url": data.get("content_urls", {})
-                    .get("desktop", {})
-                    .get("page", ""),
-                }
-            ]
+            return [{
+                "source": "Wikipedia",
+                "title": data.get("title", ""),
+                "content": data.get("extract", ""),
+                "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+            }]
 
     async def _arxiv_search(self, query: str) -> list[dict]:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -187,18 +229,26 @@ class WebSearchTool(Tool):
         logger.info("web_search_running", query=query)
 
         try:
-            wiki_results, arxiv_results, pubmed_results, github_results = (
-                await asyncio.gather(
-                    self._wiki_search(query),
-                    self._arxiv_search(query),
-                    self._pubmed_search(query),
-                    self._github_search(query),
-                    return_exceptions=True,
+            is_technical = self._is_technical_query(query)
+            logger.info("web_search_query_type", query=query, is_technical=is_technical)
+
+            if is_technical:
+                wiki_results, arxiv_results, pubmed_results, github_results = (
+                    await asyncio.gather(
+                        self._wiki_search(query),
+                        self._arxiv_search(query),
+                        self._pubmed_search(query),
+                        self._github_search(query),
+                        return_exceptions=True,
+                    )
                 )
-            )
+                results_list = [wiki_results, arxiv_results, pubmed_results, github_results]
+            else:
+                wiki_results = await self._wiki_search(query)
+                results_list = [wiki_results]
 
             sources = []
-            for result in [wiki_results, arxiv_results, pubmed_results, github_results]:
+            for result in results_list:
                 if isinstance(result, list):
                     sources.extend(result)
 
@@ -228,7 +278,7 @@ class WebSearchTool(Tool):
                 metadata={
                     "query": query,
                     "num_results": len(sources),
-                    "source": "wikipedia+arxiv+pubmed+github",
+                    "source": "wikipedia+arxiv+pubmed+github" if is_technical else "wikipedia",
                 },
             )
 

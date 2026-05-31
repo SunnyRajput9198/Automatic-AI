@@ -63,6 +63,9 @@ BE STRICT BUT FAIR:
 - Empty output may still be success
 - Error messages don't always mean failure
 - Judge based on intent, not verbosity
+- If output contains the correct answer, verdict is PASS
+- Do NOT fail a step because the method is not shown
+- Short correct output is still PASS
 
 RESPOND ONLY WITH JSON.
 """

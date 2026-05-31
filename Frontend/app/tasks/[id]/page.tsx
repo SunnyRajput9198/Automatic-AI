@@ -52,7 +52,6 @@ const STATUS_ICON = {
 function StepCard({ step }: { step: Step }) {
   const [expanded, setExpanded] = useState(step.status === 'COMPLETED' || step.status === 'FAILED');
   const color = STATUS_COLOR[step.status] || '#9898a8';
-
   return (
     <div style={{
       background: '#16161a',
@@ -136,6 +135,8 @@ export default function TaskPage() {
   const [task, setTask] = useState<Task | null>(null);
   const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
+  const [wsEvents, setWsEvents] = useState<Array<{ phase: string, status: string, [key: string]: any }>>([]);
+  const wsRef = React.useRef<WebSocket | null>(null);
   const [selectedFile, setSelectedFile] = useState<{ name: string, content: string } | null>(null);
 
   const openFile = async (filename: string) => {
@@ -159,18 +160,44 @@ export default function TaskPage() {
 
   const taskFiles = task ? extractFilesFromSteps(task.steps) : [];
 
-  // Poll while task is running
   useEffect(() => {
     fetchTask();
+
+    // Connect WebSocket for real-time updates
+    const ws = new WebSocket(`ws://localhost:8000/ws/${taskId}`);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setWsEvents(prev => [...prev, data]);
+
+      // Refresh task data when step completes or task completes
+      if (data.phase === 'step' && data.status === 'completed') {
+        fetchTask();
+      }
+      if (data.phase === 'completed' || data.phase === 'failed') {
+        fetchTask();
+      }
+    };
+
+    ws.onerror = () => console.log('WebSocket error');
+    ws.onclose = () => console.log('WebSocket closed');
+
+    // Keep polling as fallback
     const interval = setInterval(() => {
       if (task?.status === 'COMPLETED' || task?.status === 'FAILED') {
         clearInterval(interval);
+        ws.close();
         return;
       }
       fetchTask();
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [fetchTask, task?.status]);
+    }, 3000);
+
+    return () => {
+      clearInterval(interval);
+      ws.close();
+    };
+  }, [taskId, fetchTask]);
 
   // Elapsed timer
   useEffect(() => {
@@ -305,6 +332,33 @@ export default function TaskPage() {
                 )
               )}
             </>
+          )}
+          {wsEvents.length > 0 && (
+            <div style={{ marginTop: 24 }}>
+              <div style={{
+                fontSize: 11, fontWeight: 500, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: '#5c5c6e', marginBottom: 10
+              }}>
+                Live Events
+              </div>
+              <div style={{
+                background: '#0d0d10', border: '1px solid rgba(255,255,255,0.07)',
+                borderRadius: 10, padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace',
+                fontSize: 11, color: '#5c5c6e', maxHeight: 200, overflowY: 'auto'
+              }}>
+                {wsEvents.map((e, i) => (
+                  <div key={i} style={{ marginBottom: 4 }}>
+                    <span style={{ color: '#6366f1' }}>{e.phase}</span>
+                    {' → '}
+                    <span style={{ color: e.status === 'completed' ? '#10b981' : e.status === 'failed' ? '#ef4444' : '#f59e0b' }}>
+                      {e.status}
+                    </span>
+                    {e.step_number && <span> (step {e.step_number})</span>}
+                    {e.problem_type && <span style={{ color: '#9898a8' }}> [{e.problem_type}]</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
           {/* Files Section */}
           {taskFiles.length > 0 && (
