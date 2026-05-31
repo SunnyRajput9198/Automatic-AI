@@ -156,7 +156,7 @@ export default function TaskPage() {
       setError(err instanceof Error ? err.message : 'Failed to load task');
     }
   }, [taskId]);
-  const [files, setFiles] = useState<string[]>([]);
+  
 
   const taskFiles = task ? extractFilesFromSteps(task.steps) : [];
 
@@ -191,7 +191,7 @@ export default function TaskPage() {
         return;
       }
       fetchTask();
-    }, 3000);
+    }, 5000);
 
     return () => {
       clearInterval(interval);
@@ -330,8 +330,6 @@ export default function TaskPage() {
                     <span style={{ fontSize: 13, color: '#9898a8' }}>Agent is planning your task…</span>
                   </div>
                 )
-              )}
-            </>
           )}
           {wsEvents.length > 0 && (
             <div style={{ marginTop: 24 }}>
@@ -359,6 +357,8 @@ export default function TaskPage() {
                 ))}
               </div>
             </div>
+              )}
+            </>
           )}
           {/* Files Section */}
           {taskFiles.length > 0 && (

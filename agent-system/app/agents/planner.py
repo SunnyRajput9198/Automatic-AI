@@ -117,6 +117,19 @@ DEFAULT INTERPRETATION:
 - "find" = web_search (unless clearly about files)
 - "what is" = web_search
 - "look up" = web_search
+COMPARISON QUERIES (important):
+- "what is X and how different from Y" → ONE step: web_search for "X vs Y"
+- "compare X and Y" → ONE step: web_search for "X Y comparison"
+- "difference between X and Y" → ONE step: web_search for "X Y difference"
+- NEVER break comparison queries into separate searches for X and Y
+- ONE search covers both topics
+
+MULTI-TOPIC QUERIES:
+- "what is X and Y" → ONE web_search covering both
+- "explain X with examples" → ONE web_search, ONE file_write max
+- Keep plans to 2 steps maximum for simple research tasks:
+  Step 1: web_search
+  Step 2: file_write (optional)
 REPLAN RULES (when a step failed):
 - Never repeat the exact same approach that failed
 - If python_executor failed → try file_write to save code instead

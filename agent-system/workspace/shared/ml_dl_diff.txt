@@ -1,0 +1,24 @@
+TOP 3 RESULTS: DIFFERENCE BETWEEN MACHINE LEARNING AND DEEP LEARNING
+
+========================================================================
+
+1. Wikipedia — Machine Learning
+   Machine learning (ML) is a field of study in artificial intelligence concerned with the development and study of statistical algorithms that can learn from data and generalize to unseen data, and thus perform tasks without being explicitly programmed. Advances in the field of deep learning have allowed neural networks, a class of statistical algorithms, to surpass many previous machine learning approaches in performance.
+   URL: https://en.wikipedia.org/wiki/Machine_learning
+
+========================================================================
+
+2. ArXiv — Towards Smart Healthcare: Challenges and Opportunities in IoT and ML
+   The COVID-19 pandemic and other ongoing health crises have underscored the need for prompt healthcare services worldwide. The traditional healthcare system, centered around hospitals and clinics, has proven inadequate in the face of such challenges. Intelligent wearable devices, a key part of modern healthcare, leverage Internet of Things technology to collect extensive data related to the environment as well as psychological, behavioral, and physical health.
+   URL: http://arxiv.org/abs/2312.05530v2
+
+========================================================================
+
+3. ArXiv — Machine Learning for Everyone: Simplifying Healthcare Analytics with BigQuery ML
+   Machine learning (ML) transforms healthcare by enabling predictive analytics, personalized treatments, and improved patient outcomes. However, traditional ML workflows often require specialized skills, infrastructure, and resources, limiting accessibility for many healthcare professionals. This paper explores how BigQuery ML Cloud service helps healthcare researchers and data analysts to build and deploy models using SQL, without need for advanced ML knowledge.
+   URL: http://arxiv.org/abs/2502.07026v2
+
+========================================================================
+
+KEY DISTINCTION:
+Deep Learning (DL) is a subset of Machine Learning that uses neural networks with multiple layers (deep neural networks) to learn from data. While all deep learning is machine learning, not all machine learning is deep learning. Machine learning encompasses a broader range of algorithms and techniques beyond just neural networks.

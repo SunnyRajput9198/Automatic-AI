@@ -38,8 +38,8 @@ class RecoveryManager:
         """
 
         # --- Path 1: explicit suggestion (future-proof if we add the field later)
-        action = reflection_output.get("suggested_action", "").strip()
-        reason = reflection_output.get("failure_reason", "").strip()
+        action = (reflection_output.get("suggested_action") or "").strip()
+        reason = (reflection_output.get("failure_reason") or "").strip()
 
         if action in self.VALID_ACTIONS:
             logger.info("recovery_explicit_action", action=action, reason=reason)
