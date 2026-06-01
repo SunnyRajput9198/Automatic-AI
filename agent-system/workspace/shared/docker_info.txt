@@ -1,0 +1,21 @@
+TOP 3 RESULTS: What is Docker and How It Works
+
+========================================================
+
+1. Wikipedia — Docker (software)
+   Docker is a set of products that uses operating system-level virtualization to deliver software in packages called containers. Docker automates the deployment of applications within lightweight containers, enabling them to run consistently across different computing environments.
+   URL: https://en.wikipedia.org/wiki/Docker_(software)
+
+========================================================
+
+2. PubMed — A Dockerized Approach to Dynamic Endpoint Management for RESTful Application Programming Interfaces in Internet of Things Ecosystems
+   Authors: Mabotha E, Mabunda NE, Ali A. Published: 2025 May 9.
+   URL: https://pubmed.ncbi.nlm.nih.gov/40431788/
+
+========================================================
+
+3. PubMed — SGABU computational platform for multiscale modeling: Bridging the gap between education and research
+   Authors: Geroski T, Gkaintes O, Vulović A. Published: 2024 Jan.
+   URL: https://pubmed.ncbi.nlm.nih.gov/38006682/
+
+========================================================

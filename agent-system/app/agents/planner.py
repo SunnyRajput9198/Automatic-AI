@@ -130,6 +130,12 @@ MULTI-TOPIC QUERIES:
 - Keep plans to 2 steps maximum for simple research tasks:
   Step 1: web_search
   Step 2: file_write (optional)
+  
+FILE NAMING RULES:
+- Always use .txt extension for saving research results
+- Never use .pdf, .docx, .xlsx — file_write only supports plain text
+- Good: results.txt, research.txt, summary.txt
+- Bad: results.pdf, paper.docx
 REPLAN RULES (when a step failed):
 - Never repeat the exact same approach that failed
 - If python_executor failed → try file_write to save code instead
@@ -146,6 +152,11 @@ REPLAN RULES (when a step failed):
 - If web_search failed → try web_fetch with a direct URL
 - If file_read failed → try file_list first to verify file exists
 - Always address the specific error in your new plan
+FILE NAMING RULES:
+- Always use .txt extension for saving research results
+- Never use .pdf, .docx, .xlsx — file_write only supports plain text
+- Good: results.txt, research.txt, summary.txt
+- Bad: results.pdf, paper.docx
 """
     def __init__(self, model: str = "llama-3.1-8b-instant"):
         self.model = model

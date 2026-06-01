@@ -6,5 +6,8 @@
   "calculate fibonacci 5": "executor",
   "what is reinforcement learning": "executor",
   "differnece between ml and": "executor",
-  "what is machine learning": "researcher"
+  "what is machine learning": "executor",
+  "research transformer architecture paper": "executor",
+  "research attention mechanism paper": "executor",
+  "what is docker and": "executor"
 }

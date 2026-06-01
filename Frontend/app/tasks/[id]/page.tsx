@@ -156,7 +156,18 @@ export default function TaskPage() {
       setError(err instanceof Error ? err.message : 'Failed to load task');
     }
   }, [taskId]);
-  
+  const cancelTask = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/tasks/${taskId}/cancel`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        fetchTask();
+      }
+    } catch (err) {
+      console.error('Cancel failed:', err);
+    }
+  };
 
   const taskFiles = task ? extractFilesFromSteps(task.steps) : [];
 
@@ -278,6 +289,23 @@ export default function TaskPage() {
                       {elapsed}s elapsed
                     </span>
                   )}
+                  {isRunning && (
+                    <button
+                      onClick={cancelTask}
+                      style={{
+                        marginLeft: 'auto',
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        background: 'rgba(239,68,68,0.08)',
+                        border: '1px solid rgba(239,68,68,0.2)',
+                        color: '#ef4444', cursor: 'pointer',
+                        fontSize: 12, fontWeight: 500,
+                        padding: '5px 12px', borderRadius: 8,
+                      }}
+                    >
+                      <XCircle size={13} />
+                      Cancel
+                    </button>
+                  )}
                 </div>
                 <h1 style={{
                   fontFamily: 'Sora, sans-serif', fontSize: 22,
@@ -330,33 +358,33 @@ export default function TaskPage() {
                     <span style={{ fontSize: 13, color: '#9898a8' }}>Agent is planning your task…</span>
                   </div>
                 )
-          )}
-          {wsEvents.length > 0 && (
-            <div style={{ marginTop: 24 }}>
-              <div style={{
-                fontSize: 11, fontWeight: 500, letterSpacing: '0.08em',
-                textTransform: 'uppercase', color: '#5c5c6e', marginBottom: 10
-              }}>
-                Live Events
-              </div>
-              <div style={{
-                background: '#0d0d10', border: '1px solid rgba(255,255,255,0.07)',
-                borderRadius: 10, padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace',
-                fontSize: 11, color: '#5c5c6e', maxHeight: 200, overflowY: 'auto'
-              }}>
-                {wsEvents.map((e, i) => (
-                  <div key={i} style={{ marginBottom: 4 }}>
-                    <span style={{ color: '#6366f1' }}>{e.phase}</span>
-                    {' → '}
-                    <span style={{ color: e.status === 'completed' ? '#10b981' : e.status === 'failed' ? '#ef4444' : '#f59e0b' }}>
-                      {e.status}
-                    </span>
-                    {e.step_number && <span> (step {e.step_number})</span>}
-                    {e.problem_type && <span style={{ color: '#9898a8' }}> [{e.problem_type}]</span>}
+              )}
+              {wsEvents.length > 0 && (
+                <div style={{ marginTop: 24 }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 500, letterSpacing: '0.08em',
+                    textTransform: 'uppercase', color: '#5c5c6e', marginBottom: 10
+                  }}>
+                    Live Events
                   </div>
-                ))}
-              </div>
-            </div>
+                  <div style={{
+                    background: '#0d0d10', border: '1px solid rgba(255,255,255,0.07)',
+                    borderRadius: 10, padding: '12px 16px', fontFamily: 'JetBrains Mono, monospace',
+                    fontSize: 11, color: '#5c5c6e', maxHeight: 200, overflowY: 'auto'
+                  }}>
+                    {wsEvents.map((e, i) => (
+                      <div key={i} style={{ marginBottom: 4 }}>
+                        <span style={{ color: '#6366f1' }}>{e.phase}</span>
+                        {' → '}
+                        <span style={{ color: e.status === 'completed' ? '#10b981' : e.status === 'failed' ? '#ef4444' : '#f59e0b' }}>
+                          {e.status}
+                        </span>
+                        {e.step_number && <span> (step {e.step_number})</span>}
+                        {e.problem_type && <span style={{ color: '#9898a8' }}> [{e.problem_type}]</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </>
           )}

@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import json
 import time
 from pathlib import Path
-
+from app.utils.websocket_manager import cancellation_store
 from app.orchestrator.recovery_manager import RecoveryManager
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
@@ -187,6 +187,9 @@ async def execute_task_v3(task_id: str) -> None:
                     "problem_type": reasoning_output.problem_type,
                     "confidence": reasoning_output.confidence
                 })
+                if cancellation_store.is_cancelled(task_id):
+                    cancellation_store.clear(task_id)
+                    return
             except Exception as e:
                 logger.error("orchestrator_reasoning_failed", error=str(e))
 
@@ -224,6 +227,9 @@ async def execute_task_v3(task_id: str) -> None:
                     "status": "completed",
                     "agents_used": coordination_result.total_agents
                 })
+                if cancellation_store.is_cancelled(task_id):
+                    cancellation_store.clear(task_id)
+                    return
             except Exception as e:
                 logger.error("orchestrator_coordination_failed", error=str(e))
 
@@ -308,6 +314,13 @@ async def execute_task_v3(task_id: str) -> None:
             # Persist all steps, then fetch them in one query for the execution loop
             step_numbers = []
             for step_data in plan:
+                # Check cancellation before each step
+                if cancellation_store.is_cancelled(task_id):
+                    logger.info("orchestrator_task_cancelled", task_id=task_id)
+                    cancellation_store.clear(task_id)
+                    return
+
+                step_number = step_data["step"]
                 db.add(Step(
                     id=str(uuid.uuid4()),
                     task_id=task_id,
@@ -334,6 +347,9 @@ async def execute_task_v3(task_id: str) -> None:
                 "status": "completed",
                 "steps": [{"number": s["step"], "instruction": s["instruction"]} for s in plan]
             })
+            if cancellation_store.is_cancelled(task_id):
+                cancellation_store.clear(task_id)
+                return
             task_metrics["total_steps"] = len(plan)
 
             # ================================================================

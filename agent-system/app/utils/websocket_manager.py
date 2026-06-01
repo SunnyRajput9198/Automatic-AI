@@ -37,6 +37,24 @@ class WebSocketManager:
             logger.warning("websocket_send_failed", task_id=task_id, error=str(e))
             self.disconnect(task_id)
 
+class CancellationStore:
+    """Tracks which tasks have been cancelled."""
+    
+    def __init__(self):
+        self.cancelled: set = set()
+    
+    def cancel(self, task_id: str):
+        self.cancelled.add(task_id)
+        logger.info("task_cancellation_requested", task_id=task_id)
+    
+    def is_cancelled(self, task_id: str) -> bool:
+        return task_id in self.cancelled
+    
+    def clear(self, task_id: str):
+        self.cancelled.discard(task_id)
 
+
+# Global instance
+cancellation_store = CancellationStore()
 # Global instance
 ws_manager = WebSocketManager()

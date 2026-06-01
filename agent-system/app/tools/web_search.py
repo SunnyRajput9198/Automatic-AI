@@ -37,6 +37,41 @@ class WebSearchTool(Tool):
             },
             "required": ["query"],
         }
+    def _enhance_wiki_query(self, query: str) -> str:
+        tech_terms = {
+            "docker": "Docker software containerization",
+            "python": "Python programming language",
+            "rust": "Rust programming language",
+            "go": "Go programming language",
+            "swift": "Swift programming language Apple",
+            "ruby": "Ruby programming language",
+            "flask": "Flask Python web framework",
+            "django": "Django Python web framework",
+            "react": "React JavaScript library",
+            "vue": "Vue.js JavaScript framework",
+            "angular": "Angular JavaScript framework",
+            "spark": "Apache Spark big data",
+            "kafka": "Apache Kafka messaging",
+            "redis": "Redis database cache",
+            "nginx": "Nginx web server",
+            "kubernetes": "Kubernetes container orchestration",
+            "git": "Git version control software",
+        }
+
+        query_lower = query.lower().strip()
+
+        for term, enhanced in tech_terms.items():
+            # Match if query is exactly the term or contains it as the main subject
+            if (query_lower == term or
+                query_lower == f"what is {term}" or
+                query_lower == f"what is {term} and how it works" or
+                query_lower.startswith(f"{term} ") or
+                query_lower.endswith(f" {term}") or
+                f" {term} " in f" {query_lower} "):
+                return enhanced
+
+        return query
+
     def _is_technical_query(self, query: str) -> bool:
         """
         Returns True if query is technical/research — use all sources.
@@ -82,7 +117,7 @@ class WebSearchTool(Tool):
                     "action": "query",
                     "list": "search",
                     "srsearch": query,
-                    "srlimit": 1,
+                    "srsearch": self._enhance_wiki_query(query),
                     "format": "json",
                 }
             )

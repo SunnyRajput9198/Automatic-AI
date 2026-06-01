@@ -1,0 +1,24 @@
+TOP 3 RESEARCH RESULTS: Attention Mechanism Papers
+
+========================================
+
+1. Wikipedia — Attention Is All You Need
+   "Attention Is All You Need" is a 2017 research paper in machine learning authored by eight scientists and engineers working at Google. The paper introduced a new deep learning architecture known as the transformer, based on the attention mechanism proposed in 2014 by Bahdanau et al. The transformer approach it describes has become the main architecture of a wide variety of artificial intelligence, including large language models.
+   URL: https://en.wikipedia.org/wiki/Attention_Is_All_You_Need
+
+========================================
+
+2. PubMed — Prior knowledge-guided vision-transformer-based unsupervised domain adaptation for intubation prediction in lung disease at one week
+   Authors: Yang J, Henao JAG, Dvornek N
+   Published: 2024 Dec
+   URL: https://pubmed.ncbi.nlm.nih.gov/39515190/
+
+========================================
+
+3. GitHub — LiamMaclean216/Pytorch-Transfomer
+   My implementation of the transformer architecture from the Attention is All you need paper applied to time series.
+   Stars: 322
+   Language: Jupyter Notebook
+   URL: https://github.com/LiamMaclean216/Pytorch-Transfomer
+
+========================================

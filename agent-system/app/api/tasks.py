@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 import uuid
+from datetime import datetime
 import structlog
 from app.db.session import get_db
 from app.models.task import Task, Step, TaskStatus
@@ -185,3 +186,34 @@ async def get_analytics():
         "avg_retries": round(sum(t.get("total_retries", 0) for t in tasks) / total, 1),
         "tasks": tasks[:20]
     }
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str, db: Session = Depends(get_db)):
+    """Cancel a running task"""
+    from app.utils.websocket_manager import cancellation_store
+
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status not in ["PENDING", "RUNNING"]:
+        raise HTTPException(status_code=400, detail=f"Task is {task.status} — cannot cancel")
+
+    # Signal cancellation
+    cancellation_store.cancel(task_id)
+
+    # Update DB
+    task.status = TaskStatus.FAILED
+    task.error_message = "Cancelled by user"
+    task.completed_at = datetime.utcnow()
+    db.commit()
+
+    # Notify WebSocket
+    from app.utils.websocket_manager import ws_manager
+    await ws_manager.emit(task_id, {
+        "phase": "cancelled",
+        "status": "cancelled"
+    })
+
+    logger.info("task_cancelled", task_id=task_id)
+    return {"task_id": task_id, "status": "cancelled"}
