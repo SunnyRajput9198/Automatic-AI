@@ -246,13 +246,22 @@ export default function Home() {
           .how-grid { grid-template-columns: 1fr 1fr; }
         }
       `}</style>
-
       <div className="page">
         <header className="topbar">
           <div className="logo">
             <div className="logo-icon">⚡</div>
             Agent
           </div>
+          <button
+            onClick={() => router.push('/analytics')}
+            style={{
+              marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,0.1)',
+              color: '#9898a8', cursor: 'pointer', fontSize: 12, padding: '4px 12px',
+              borderRadius: 6,
+            }}
+          >
+            Analytics
+          </button>
           <span className="topbar-badge">Autonomous</span>
         </header>
 

@@ -146,3 +146,42 @@ async def get_file(filename: str):
     if content is None:
         raise HTTPException(status_code=404, detail="File not found")
     return PlainTextResponse(content=content)
+
+@router.get("/analytics")
+async def get_analytics():
+    """Get analytics from cost tracker files"""
+    import json
+    from pathlib import Path
+    from app.core.config import settings
+
+    costs_dir = Path(settings.COSTS_DIR)
+    files = list(costs_dir.glob("task_*.json"))
+
+    if not files:
+        return {"total_tasks": 0, "tasks": []}
+
+    tasks = []
+    for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:50]:
+        try:
+            with open(f) as fp:
+                data = json.load(fp)
+            tasks.append(data)
+        except:
+            continue
+
+    total = len(tasks)
+    successful = sum(1 for t in tasks if t.get("success"))
+    failed = total - successful
+
+    return {
+        "total_tasks": total,
+        "successful": successful,
+        "failed": failed,
+        "success_rate": round(successful / total * 100, 1) if total > 0 else 0,
+        "avg_duration": round(sum(t.get("duration_sec", 0) for t in tasks) / total, 1),
+        "avg_llm_calls": round(sum(t.get("total_llm_calls", 0) for t in tasks) / total, 1),
+        "avg_cost_usd": round(sum(t.get("estimated_cost_usd", 0) for t in tasks) / total, 6),
+        "total_cost_usd": round(sum(t.get("estimated_cost_usd", 0) for t in tasks), 4),
+        "avg_retries": round(sum(t.get("total_retries", 0) for t in tasks) / total, 1),
+        "tasks": tasks[:20]
+    }
