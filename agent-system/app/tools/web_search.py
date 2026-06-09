@@ -1,3 +1,4 @@
+import re
 import structlog
 from typing import Dict, Any
 import httpx
@@ -8,12 +9,27 @@ from app.tools.base import Tool, ToolResult
 
 logger = structlog.get_logger()
 
-
 class WebSearchTool(Tool):
     """
-    Search using Wikipedia REST API + ArXiv API.
-    No API key required.
+    Multi-source web search tool for research and technical queries.
+
+    Sources:
+    - Wikipedia for general knowledge
+    - ArXiv for research papers
+    - PubMed for scientific literature
+    - GitHub for repositories and code examples
+
+    Returns normalized search results from multiple sources.
     """
+
+    def __init__(self):
+        self.client = httpx.AsyncClient(
+            timeout=10,
+            headers={"User-Agent": "ResearchAgent/1.0 (educational project)"},
+        )
+
+    async def close(self):
+        await self.client.aclose()
 
     @property
     def name(self) -> str:
@@ -37,6 +53,7 @@ class WebSearchTool(Tool):
             },
             "required": ["query"],
         }
+
     def _enhance_wiki_query(self, query: str) -> str:
         tech_terms = {
             "docker": "Docker software containerization",
@@ -61,13 +78,7 @@ class WebSearchTool(Tool):
         query_lower = query.lower().strip()
 
         for term, enhanced in tech_terms.items():
-            # Match if query is exactly the term or contains it as the main subject
-            if (query_lower == term or
-                query_lower == f"what is {term}" or
-                query_lower == f"what is {term} and how it works" or
-                query_lower.startswith(f"{term} ") or
-                query_lower.endswith(f" {term}") or
-                f" {term} " in f" {query_lower} "):
+            if re.search(rf"\b{re.escape(term)}\b", query_lower):
                 return enhanced
 
         return query
@@ -78,179 +89,194 @@ class WebSearchTool(Tool):
         Returns False if general knowledge — use only Wikipedia.
         """
         general_indicators = [
-            "what is", "what are", "who is", "who are",
-            "explain", "tell me about", "how does", "why is",
-            "difference between", "compare", "vs", "versus",
-            "define", "definition", "meaning of", "introduction to"
+            "what is",
+            "what are",
+            "who is",
+            "who are",
+            "explain",
+            "tell me about",
+            "how does",
+            "why is",
+            "difference between",
+            "compare",
+            "vs",
+            "versus",
+            "define",
+            "definition",
+            "meaning of",
+            "introduction to",
         ]
-        
+
         technical_indicators = [
-            "research", "paper", "algorithm", "implementation",
-            "architecture", "framework", "library", "model",
-            "dataset", "benchmark", "sota", "state of the art",
-            "arxiv", "pubmed", "github", "code", "repository"
+            "research",
+            "paper",
+            "algorithm",
+            "implementation",
+            "architecture",
+            "framework",
+            "library",
+            "model",
+            "dataset",
+            "benchmark",
+            "sota",
+            "state of the art",
+            "arxiv",
+            "pubmed",
+            "github",
+            "code",
+            "repository",
         ]
-        
+
         query_lower = query.lower()
-    
-    # If explicitly technical — use all sources
+
+        # If explicitly technical — use all sources
         for indicator in technical_indicators:
             if indicator in query_lower:
                 return True
-        
+
         # If general question — Wikipedia only
         for indicator in general_indicators:
             if indicator in query_lower:
                 return False
-        
+
         # Default — use all sources
         return True
+
     async def _wiki_search(self, query: str) -> list[dict]:
-        async with httpx.AsyncClient(
-            timeout=10,
-            headers={"User-Agent": "ResearchAgent/1.0 (educational project)"},
-        ) as client:
-            # Step 1 — search for the right page
-            search_resp = await client.get(
-                "https://en.wikipedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "list": "search",
-                    "srsearch": query,
-                    "srsearch": self._enhance_wiki_query(query),
-                    "format": "json",
-                }
-            )
-            if search_resp.status_code != 200:
-                return []
 
-            hits = search_resp.json().get("query", {}).get("search", [])
-            if not hits:
-                return []
+        # Step 1 — search for the right page
+        search_resp = await self.client.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": self._enhance_wiki_query(query),
+                "format": "json",
+            },
+        )
+        if search_resp.status_code != 200:
+            return []
 
-            # Step 2 — get summary of top result
-            title = hits[0]["title"]
-            slug = title.replace(" ", "_")
+        hits = search_resp.json().get("query", {}).get("search", [])
+        if not hits:
+            return []
 
-            response = await client.get(
-                f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
-            )
-            if response.status_code != 200:
-                return []
+        # Step 2 — get summary of top result
+        title = hits[0]["title"]
+        slug = title.replace(" ", "_")
 
-            data = response.json()
-            return [{
+        response = await self.client.get(
+            f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
+        )
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+        return [
+            {
                 "source": "Wikipedia",
                 "title": data.get("title", ""),
                 "content": data.get("extract", ""),
                 "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
-            }]
+            }
+        ]
 
     async def _arxiv_search(self, query: str) -> list[dict]:
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(
-                "https://export.arxiv.org/api/query",
-                params={"search_query": f"all:{query}", "max_results": 3},
+
+        response = await self.client.get(
+            "https://export.arxiv.org/api/query",
+            params={"search_query": f"all:{query}", "max_results": 3},
+        )
+
+        root = ET.fromstring(response.text)
+        ns = {"a": "http://www.w3.org/2005/Atom"}
+        # arvix retuns xml, so we need to parse it
+        # ns is used as a namespace. It tells the parser to look inside the a:entry tag for the title, summary, and id tags.
+        # xmlns is called a namespace. Without telling your code that namespace, findall("entry") returns nothing. The ns dictionary is how you tell Python which namespace to look inside.
+        papers = []
+        for entry in root.findall("a:entry", ns):
+            title = entry.find("a:title", ns)
+            summary = entry.find("a:summary", ns)
+            link = entry.find("a:id", ns)
+
+            papers.append(
+                {
+                    "source": "ArXiv",
+                    "title": (
+                        title.text.strip() if title is not None and title.text else ""
+                    ),
+                    "content": (
+                        summary.text.strip()
+                        if summary is not None and summary.text
+                        else ""
+                    ),
+                    "url": (
+                        link.text.strip() if link is not None and link.text else ""
+                    ),
+                }
             )
 
-            root = ET.fromstring(response.text)
-            ns = {"a": "http://www.w3.org/2005/Atom"}
-            # ns is used as a namespace. It tells the parser to look inside the a:entry tag for the title, summary, and id tags.
-            # xmlns is called a namespace. Without telling your code that namespace, findall("entry") returns nothing. The ns dictionary is how you tell Python which namespace to look inside.
-            papers = []
-            for entry in root.findall("a:entry", ns):
-                title = entry.find("a:title", ns)
-                summary = entry.find("a:summary", ns)
-                link = entry.find("a:id", ns)
-
-                papers.append(
-                    {
-                        "source": "ArXiv",
-                        "title": (
-                            title.text.strip()
-                            if title is not None and title.text
-                            else ""
-                        ),
-                        "content": (
-                            summary.text.strip()
-                            if summary is not None and summary.text
-                            else ""
-                        ),
-                        "url": (
-                            link.text.strip() if link is not None and link.text else ""
-                        ),
-                    }
-                )
-
-            return papers
+        return papers
 
     async def _pubmed_search(self, query: str) -> list[dict]:
-        async with httpx.AsyncClient(
-            timeout=10,
-            headers={"User-Agent": "ResearchAgent/1.0 (educational project)"},
-        ) as client:
-            # Step 1 — get IDs
-            search_resp = await client.get(
-                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
-                params={"db": "pubmed", "term": query, "retmax": 3, "retmode": "json"},
+        # Step 1 — get IDs
+        search_resp = await self.client.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi",
+            params={"db": "pubmed", "term": query, "retmax": 3, "retmode": "json"},
+        )
+        if search_resp.status_code != 200:
+            return []
+
+        ids = search_resp.json().get("esearchresult", {}).get("idlist", [])
+        if not ids:
+            return []
+
+        # Step 2 — get details
+        summary_resp = await self.client.get(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
+            params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
+        )
+        if summary_resp.status_code != 200:
+            return []
+
+        result = summary_resp.json().get("result", {})
+        papers = []
+        for uid in ids:
+            paper = result.get(uid, {})
+            title = paper.get("title", "")
+            if not title:
+                continue
+            papers.append(
+                {
+                    "source": "PubMed",
+                    "title": title,
+                    "content": f"Authors: {', '.join(a.get('name','') for a in paper.get('authors', [])[:3])}. Published: {paper.get('pubdate', '')}.",
+                    "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
+                }
             )
-            if search_resp.status_code != 200:
-                return []
-
-            ids = search_resp.json().get("esearchresult", {}).get("idlist", [])
-            if not ids:
-                return []
-
-            # Step 2 — get details
-            summary_resp = await client.get(
-                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
-                params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
-            )
-            if summary_resp.status_code != 200:
-                return []
-
-            result = summary_resp.json().get("result", {})
-            papers = []
-            for uid in ids:
-                paper = result.get(uid, {})
-                title = paper.get("title", "")
-                if not title:
-                    continue
-                papers.append(
-                    {
-                        "source": "PubMed",
-                        "title": title,
-                        "content": f"Authors: {', '.join(a.get('name','') for a in paper.get('authors', [])[:3])}. Published: {paper.get('pubdate', '')}.",
-                        "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
-                    }
-                )
-            return papers
+        return papers
 
     async def _github_search(self, query: str) -> list[dict]:
-        async with httpx.AsyncClient(
-            timeout=10,
-            headers={"User-Agent": "ResearchAgent/1.0 (educational project)"},
-        ) as client:
-            resp = await client.get(
-                "https://api.github.com/search/repositories",
-                params={"q": query, "sort": "stars", "per_page": 3},
-            )
-            if resp.status_code != 200:
-                return []
+        resp = await self.client.get(
+            "https://api.github.com/search/repositories",
+            params={"q": query, "sort": "stars", "per_page": 3},
+        )
+        if resp.status_code != 200:
+            return []
 
-            items = resp.json().get("items", [])
-            repos = []
-            for item in items:
-                description = item.get("description") or "No description"
-                repos.append(
-                    {
-                        "source": "GitHub",
-                        "title": item.get("full_name", ""),
-                        "content": f"{description}. Stars: {item.get('stargazers_count', 0)}. Language: {item.get('language', 'Unknown')}.",
-                        "url": item.get("html_url", ""),
-                    }
-                )
-            return repos
+        items = resp.json().get("items", [])
+        repos = []
+        for item in items:
+            description = item.get("description") or "No description"
+            repos.append(
+                {
+                    "source": "GitHub",
+                    "title": item.get("full_name", ""),
+                    "content": f"{description}. Stars: {item.get('stargazers_count', 0)}. Language: {item.get('language', 'Unknown')}.",
+                    "url": item.get("html_url", ""),
+                }
+            )
+        return repos
 
     async def run(self, **kwargs) -> ToolResult:
         query = kwargs.get("query", "")
@@ -277,7 +303,12 @@ class WebSearchTool(Tool):
                         return_exceptions=True,
                     )
                 )
-                results_list = [wiki_results, arxiv_results, pubmed_results, github_results]
+                results_list = [
+                    wiki_results,
+                    arxiv_results,
+                    pubmed_results,
+                    github_results,
+                ]
             else:
                 wiki_results = await self._wiki_search(query)
                 results_list = [wiki_results]
@@ -291,7 +322,7 @@ class WebSearchTool(Tool):
                 return ToolResult(
                     success=False,
                     output="",
-                    error="No results found from Wikipedia or ArXiv",
+                    error="No results found from any search source",
                     metadata={"query": query, "num_results": 0},
                 )
 
@@ -311,9 +342,12 @@ class WebSearchTool(Tool):
                 success=True,
                 output=output,
                 metadata={
+                    "tool_name": "web_search",
                     "query": query,
                     "num_results": len(sources),
-                    "source": "wikipedia+arxiv+pubmed+github" if is_technical else "wikipedia",
+                    "source": (
+                        "wikipedia+arxiv+pubmed+github" if is_technical else "wikipedia"
+                    ),
                 },
             )
 
@@ -425,6 +459,7 @@ class WebFetchTool(Tool):
                     success=True,
                     output=content,
                     metadata={
+                        "tool_name": "web_fetch",
                         "url": url,
                         "status_code": response.status_code,
                         "content_type": response.headers.get("content-type", ""),

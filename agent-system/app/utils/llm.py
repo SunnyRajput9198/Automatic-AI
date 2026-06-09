@@ -8,6 +8,7 @@ from anthropic.types import TextBlock  # add this import
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
+
 load_dotenv()
 logger = structlog.get_logger()
 
@@ -21,6 +22,7 @@ DEFAULT_MODEL = "claude-haiku-4-5-20251001"  # Best balance for agents
 # -------------------------------
 # Simple Async Rate Limiter
 # -------------------------------
+
 
 class RateLimiter:
     """
@@ -37,10 +39,7 @@ class RateLimiter:
         async with self._lock:
             now = datetime.now()
 
-            self.calls = [
-                t for t in self.calls
-                if now - t < self.period
-            ]
+            self.calls = [t for t in self.calls if now - t < self.period]
 
             if len(self.calls) >= self.max_calls:
                 oldest = min(self.calls)
@@ -87,10 +86,11 @@ _client = Anthropic(api_key=_api_key)
 # Helpers
 # -------------------------------
 
+
 def _convert_messages(messages: List[Dict[str, str]]):
     """
     Convert OpenAI-style messages to Anthropic messages
-    
+
     Returns:
         (system_prompt, anthropic_messages)
     """
@@ -141,9 +141,12 @@ def _sync_claude_call(
 
     raise ValueError("No TextBlock found in Claude response")
     # remove the old: return response.content[0].text
+
+
 # -------------------------------
 # Public Async API
 # -------------------------------
+
 
 async def call_llm(
     messages: List[Dict[str, str]],
@@ -194,7 +197,8 @@ async def call_llm(
             error=str(e),
         )
         raise RuntimeError(f"Anthropic LLM call failed: {str(e)}")
-    
+
+
 async def call_llm_with_system(
     system_prompt: str,
     user_prompt: str,
@@ -202,10 +206,6 @@ async def call_llm_with_system(
     temperature: float = 0.1,
     max_tokens: int = 4000,
 ) -> str:
-    """
-    Convenience wrapper for the common system+user message pattern.
-    Used by most agents — reduces boilerplate from 8 lines to 1.
-    """
     return await call_llm(
         messages=[
             {"role": "system", "content": system_prompt},
@@ -215,7 +215,8 @@ async def call_llm_with_system(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    
+
+
 def _sync_groq_call(
     messages: List[Dict[str, str]],
     model: str,

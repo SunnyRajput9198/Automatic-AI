@@ -1,0 +1,13 @@
+TOP 3 AI AGENTS RESEARCH RESULTS
+
+1. Wikipedia — AI agent
+   In the context of generative artificial intelligence, AI agents are a class of intelligent agents that can pursue goals, use tools, and take actions with varying degrees of autonomy. In practice, they usually operate within human-defined objectives, constraints, and available tools.
+   URL: https://en.wikipedia.org/wiki/AI_agent
+
+2. ArXiv — AI prediction leads people to forgo guaranteed rewards
+   Artificial intelligence (AI) is understood to affect the content of people's decisions. Here, using a behavioral implementation of the classic Newcomb's paradox in 1,305 participants, we show that AI can also change how people decide. In this paradigm, belief in predictive authority can lead individuals to constrain decision-making, forgoing a guaranteed reward. Over 40% of participants treated AI as such a predictive authority. This significantly increased the odds of forgoing the guaranteed reward.
+   URL: http://arxiv.org/abs/2603.28944v1
+
+3. ArXiv — Foundations of GenIR
+   The chapter discusses the foundational impact of modern generative AI models on information access (IA) systems. In contrast to traditional AI, the large-scale training and superior data modeling of generative AI models enable them to produce high-quality, human-like responses, which brings brand new opportunities for the development of IA paradigms. In this chapter, we identify and introduce two of them in details, i.e., information generation and information synthesis.
+   URL: http://arxiv.org/abs/2501.02842v1

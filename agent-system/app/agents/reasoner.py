@@ -12,14 +12,14 @@ logger = structlog.get_logger()
 class ReasoningOutput(BaseModel):
     """Structured reasoning output from the ReasonerAgent."""
 
-    problem_type: str       # "file_operation" | "web_research" | "calculation" |
-                            # "data_transformation" | "system_operation" | "mixed"
-    strategy: str           # High-level approach in 1-2 sentences
-    needs_memory: bool      # Should we check past experiences?
-    needs_search: bool      # Should we search the web?
-    likely_tools: List[str] # Expected tools to use
-    uncertainties: List[str]# What could go wrong?
-    confidence: float       # 0.0 – 1.0
+    problem_type: str  # "file_operation" | "web_research" | "calculation" |
+    # "data_transformation" | "system_operation" | "mixed"
+    strategy: str  # High-level approach in 1-2 sentences
+    needs_memory: bool  # Should we check past experiences?
+    needs_search: bool  # Should we search the web?
+    likely_tools: List[str]  # Expected tools to use
+    uncertainties: List[str]  # What could go wrong?
+    confidence: float  # 0.0 – 1.0
 
 
 class ReasonerAgent:
@@ -71,48 +71,48 @@ Confidence Assessment:
 
 RESPONSE FORMAT (JSON only):
 {
-  "problem_type": "file_operation|web_research|calculation|data_transformation|system_operation|mixed",
-  "strategy": "High-level approach in 1-2 sentences",
-  "needs_memory": true|false,
-  "needs_search": true|false,
-  "likely_tools": ["tool1", "tool2"],
-  "uncertainties": ["uncertainty1", "uncertainty2"],
-  "confidence": 0.85
+    "problem_type": "file_operation|web_research|calculation|data_transformation|system_operation|mixed",
+    "strategy": "High-level approach in 1-2 sentences",
+    "needs_memory": true|false,
+    "needs_search": true|false,
+    "likely_tools": ["tool1", "tool2"],
+    "uncertainties": ["uncertainty1", "uncertainty2"],
+    "confidence": 0.85
 }
 
 EXAMPLES:
 
 Task: "Create a file called test.txt with hello world"
 {
-  "problem_type": "file_operation",
-  "strategy": "Use file_write to create new file with specified content",
-  "needs_memory": false,
-  "needs_search": false,
-  "likely_tools": ["file_write"],
-  "uncertainties": ["file may already exist"],
-  "confidence": 0.95
+    "problem_type": "file_operation",
+    "strategy": "Use file_write to create new file with specified content",
+    "needs_memory": false,
+    "needs_search": false,
+    "likely_tools": ["file_write"],
+    "uncertainties": ["file may already exist"],
+    "confidence": 0.95
 }
 
 Task: "Search for the latest developments in quantum computing"
 {
-  "problem_type": "web_research",
-  "strategy": "Use web_search to find recent articles, may need multiple searches for depth",
-  "needs_memory": false,
-  "needs_search": true,
-  "likely_tools": ["web_search", "web_fetch"],
-  "uncertainties": ["topic is rapidly evolving", "need to verify recency of sources"],
-  "confidence": 0.75
+    "problem_type": "web_research",
+    "strategy": "Use web_search to find recent articles, may need multiple searches for depth",
+    "needs_memory": false,
+    "needs_search": true,
+    "likely_tools": ["web_search", "web_fetch"],
+    "uncertainties": ["topic is rapidly evolving", "need to verify recency of sources"],
+    "confidence": 0.75
 }
 
 Task: "Calculate fibonacci(100)"
 {
-  "problem_type": "calculation",
-  "strategy": "Use python_executor with iterative approach to avoid recursion limits",
-  "needs_memory": true,
-  "needs_search": false,
-  "likely_tools": ["python_executor"],
-  "uncertainties": ["large number may need special handling"],
-  "confidence": 0.9
+    "problem_type": "calculation",
+    "strategy": "Use python_executor with iterative approach to avoid recursion limits",
+    "needs_memory": true,
+    "needs_search": false,
+    "likely_tools": ["python_executor"],
+    "uncertainties": ["large number may need special handling"],
+    "confidence": 0.9
 }
 
 RESPOND ONLY WITH JSON."""
@@ -164,11 +164,11 @@ RESPOND ONLY WITH JSON."""
 
         try:
             response = await call_llm_with_system(
-    system_prompt=self.SYSTEM_PROMPT,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.2,
-)
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.2,
+            )
 
             reasoning_data = extract_json(response, context="reasoner")
             if not reasoning_data:

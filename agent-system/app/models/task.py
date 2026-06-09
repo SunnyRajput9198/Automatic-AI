@@ -60,6 +60,7 @@ class Task(Base):
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
 
     steps: Mapped[List[Step]] = relationship(
         "Step", back_populates="task", cascade="all, delete-orphan"

@@ -44,7 +44,7 @@ AGENTS SUPPORTED:
         
         Args:
             available_agents: Dict mapping role -> agent instance
-                             e.g., {"researcher": ResearcherAgent(), ...}
+                e.g., {"researcher": ResearcherAgent(), ...}
         """
         self.available_agents = available_agents
         self.router = TaskRouter()
@@ -195,6 +195,10 @@ AGENTS SUPPORTED:
         # ==================================================
         # STEP 3: Aggregate
         # ==================================================
+        logger.info(
+    "coordinator_raw_results",
+    results=agent_results
+)
         coordination_result = self._aggregate_results(
             task=task,
             agent_results=agent_results,

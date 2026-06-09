@@ -7,7 +7,12 @@ from app.utils.file_manager import FileManager
 from app.tools.base import Tool, ToolResult
 from app.tools.python_tool import PythonExecutor
 from app.tools.shell_tool import ShellExecutor
-from app.tools.file_tools import FileReadTool, FileWriteTool, FileListTool, FileDeleteTool
+from app.tools.file_tools import (
+    FileReadTool,
+    FileWriteTool,
+    FileListTool,
+    FileDeleteTool,
+)
 from app.tools.web_search import WebSearchTool, WebFetchTool
 from app.core.config import settings
 
@@ -53,11 +58,11 @@ For code in JSON strings:
 
 RESPONSE FORMAT (JSON only):
 {
-  "tool": "tool_name",
-  "inputs": {
+    "tool": "tool_name",
+    "inputs": {
     "param1": "value1"
-  },
-  "reasoning": "why this tool and these inputs"
+    },
+    "reasoning": "why this tool and these inputs"
 }
 
 RESPOND ONLY WITH VALID JSON.
@@ -69,9 +74,6 @@ RESPOND ONLY WITH VALID JSON.
 
         self.file_manager = FileManager()
 
-        # FIX: Register each tool exactly once, respecting feature flags.
-        # Previously each tool was registered twice — once conditionally,
-        # then again unconditionally — which silently bypassed the flags.
         if settings.ENABLE_PYTHON_EXECUTOR:
             self._register_tool(PythonExecutor())
 
@@ -131,6 +133,40 @@ RESPOND ONLY WITH VALID JSON.
         # Deterministic fast-path: no LLM call needed for trivial cases
         # ------------------------------------------------------------------
         instruction_l = instruction.lower()
+    
+        logger.info("executor_fast_path_check", instruction_l=instruction_l[:100])
+        logger.info("executor_context_keys", keys=list(context.keys()))
+        try:
+            # Fast-path: pure reasoning/summarization steps
+            reasoning_keywords = [
+                "summarize",
+                "summary",
+                "from the provided session history",
+                "from session history",
+                "from the session history",
+                "previous task",
+                "what was found",
+                "based on session",
+            ]
+            if any(kw in instruction_l for kw in reasoning_keywords):
+                if "session_history" in context:
+                    history = context["session_history"]
+
+                    output = []
+
+                    for i, h in enumerate(history, 1):
+                        output.append(f"Task {i}: {h.get('task', '')}")
+
+                        if h.get("output"):
+                            output.append(h["output"][:1000])
+
+                    return ToolResult(
+                        success=True,
+                        output="\n\n".join(output),
+                        metadata={"source": "session_history"}
+                    )
+        except Exception as e:
+            logger.warning("executor_session_fast_path_failed", error=str(e))
 
         try:
             if instruction_l.startswith("list") or "list files" in instruction_l:
@@ -145,7 +181,9 @@ RESPOND ONLY WITH VALID JSON.
                         error="Shell executor is disabled; use file_list for workspace files.",
                     )
         except Exception as e:
-            logger.warning("executor_fallback_failed", instruction=instruction, error=str(e))
+            logger.warning(
+                "executor_fallback_failed", instruction=instruction, error=str(e)
+            )
 
         # ------------------------------------------------------------------
         # LLM-based tool selection
@@ -198,7 +236,9 @@ RESPOND ONLY WITH VALID JSON.
                     output="",
                     error="python_executor requires a 'code' parameter.",
                 )
-            if code.lower().startswith(("create a", "write a", "make a", "build a", "generate a", "produce a")):
+            if code.lower().startswith(
+                ("create a", "write a", "make a", "build a", "generate a", "produce a")
+            ):
                 logger.warning("executor_invalid_code_input", code_preview=code[:100])
                 return ToolResult(
                     success=False,
@@ -243,11 +283,28 @@ RESPOND ONLY WITH VALID JSON.
 
         context_str = ""
         if context:
-            context_str = (
-                "\n\nCONTEXT FROM PREVIOUS STEPS:\n"
-                + json.dumps(context, indent=2)
+            # Limit context size to prevent recursion issues
+            safe_context = {
+                k: v
+                for k, v in context.items()
+                if k
+                in [
+                    "task_description",
+                    "should_search",
+                    "avoid_tools",
+                    "forced_tool",
+                    "step_1_output",
+                    "step_2_output",
+                    "step_3_output",
+                    "week4_output",
+                ]
+            }
+            # Add session history summary if present
+            if "session_history" in context:
+                safe_context["session_history"] = str(context["session_history"])[:300]
+            context_str = "\n\nCONTEXT FROM PREVIOUS STEPS:\n" + json.dumps(
+                safe_context, indent=2
             )
-
         user_prompt = (
             f"STEP INSTRUCTION:\n\n{instruction}{context_str}\n\n"
             "Choose the appropriate tool and generate EXECUTABLE inputs (not instruction text).\n"
@@ -266,12 +323,12 @@ RESPOND ONLY WITH VALID JSON.
 
         try:
             response = await call_llm_with_system(
-    system_prompt=system_prompt,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.1,
-    max_tokens=4000,
-)
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.1,
+                max_tokens=4000,
+            )
 
             response_text = response.strip()
 
@@ -288,7 +345,7 @@ RESPOND ONLY WITH VALID JSON.
             if not decision:
                 logger.error(
                     "executor_json_extraction_failed",
-                    response_preview=response_text[:200]
+                    response_preview=response_text[:200],
                 )
                 return None
 

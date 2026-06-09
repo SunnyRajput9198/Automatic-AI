@@ -56,18 +56,14 @@ def extract_json(response: str, context: str = "") -> Optional[dict]:
 
     if start_idx != -1 and end_idx != -1:
         try:
-            return json.loads(text[start_idx:end_idx + 1])
+            return json.loads(text[start_idx : end_idx + 1])
         except json.JSONDecodeError as e:
             logger.error(
                 "json_parser_failed",
                 context=context,
                 error=str(e),
-                preview=text[start_idx:start_idx + 200]
+                preview=text[start_idx : start_idx + 200],
             )
 
-    logger.error(
-        "json_parser_no_json_found",
-        context=context,
-        preview=text[:200]
-    )
+    logger.error("json_parser_no_json_found", context=context, preview=text[:200])
     return None

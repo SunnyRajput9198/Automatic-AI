@@ -1,6 +1,7 @@
 import subprocess
 import os
 import structlog
+import shlex
 from typing import Any, Dict
 
 from app.tools.base import Tool, ToolResult
@@ -55,7 +56,7 @@ class ShellExecutor(Tool):
         for char in dangerous_chars:
             if char in command:
                 return False
-        parts = command.strip().split()
+        parts = shlex.split(command)
         return bool(parts) and parts[0] in self.ALLOWED_COMMANDS
 
     async def run(self, **kwargs: Any) -> ToolResult:
@@ -65,7 +66,7 @@ class ShellExecutor(Tool):
             return ToolResult(success=False, output="", error="No command provided")
 
         if not self._is_command_safe(command):
-            base_cmd = command.split()[0] if command.split() else ""
+            base_cmd = shlex.split(command)[0] if shlex.split(command) else ""
             return ToolResult(
                 success=False,
                 output="",
@@ -77,17 +78,12 @@ class ShellExecutor(Tool):
 
         logger.info("shell_executor_running", command=command)
 
-        # FIX: removed trailing comma that made shared_workspace a tuple.
-        # Was:  shared_workspace = os.getenv(...),   →  type: tuple[str]
-        # Now:  shared_workspace = os.getenv(...)    →  type: str
-        # The tuple caused subprocess.run(cwd=...) and os.makedirs(...) to
-        # receive a tuple instead of a str, triggering "No overloads match".
         shared_workspace: str = settings.SHARED_WORKSPACE
         os.makedirs(shared_workspace, exist_ok=True)
 
         try:
             result = subprocess.run(
-                command.split(),# split the command into a list of arguments
+                shlex.split(command),# split the command into a list of arguments
                 shell=False,# tell the subprocess to treat the command as a list of arguments
                 capture_output=True,
                 text=True,

@@ -15,6 +15,7 @@ logger = structlog.get_logger()
 
 class Reflection(BaseModel):
     """Structured reflection output"""
+
     what_worked: List[str]  # Successful strategies
     what_failed: List[str]  # Failures and mistakes
     root_causes: List[str]  # Why failures happened
@@ -24,16 +25,15 @@ class Reflection(BaseModel):
     pattern_quality: float  # How reusable is this pattern (0-1)
     suggested_action: Optional[str] = None  # ← borrow this idea
 
-
 class ReflectionAgent:
     """
     Post-task reflection and learning agent.
-    
+
     RUNS AFTER: Task completion (success or failure)
     PURPOSE: Extract lessons and improve future performance
     MODEL: Claude Haiku (analysis + learning)
     """
-    
+
     SYSTEM_PROMPT = """You are a reflection and learning agent. Your job is to analyze completed tasks and extract actionable lessons.
 
 Your analysis helps the system:
@@ -145,51 +145,49 @@ Failed calculation with retries:
 RESPOND ONLY WITH JSON."""
 
     def __init__(self, model: str = "llama-3.3-70b-versatile"):
-      self.model = model
-    
+        self.model = model
+
     async def reflect(
         self,
         task: Task,
         reasoning_used: Optional[Dict] = None,
-        search_used: bool = False
+        search_used: bool = False,
     ) -> Reflection:
         """
         Analyze completed task and generate reflection.
-        
+
         Args:
             task: Completed task (success or failure)
             reasoning_used: Optional reasoning output that was used
             search_used: Whether web search was used
-            
+
         Returns:
             Reflection with lessons and confidence updates
         """
-        logger.info(
-            "reflection_starting",
-            task_id=task.id,
-            status=task.status
-        )
-        
+        logger.info("reflection_starting", task_id=task.id, status=task.status)
+
         # Build task summary
         steps_summary = []
         total_retries = 0
-        
+
         for step in sorted(task.steps, key=lambda s: s.step_number):
             total_retries += step.retry_count
-            steps_summary.append({
-                "step": step.step_number,
-                "instruction": step.instruction,
-                "tool": step.tool_name,
-                "status": step.status,
-                "retries": step.retry_count,
-                "error": step.error if step.error else None
-            })
-        
+            steps_summary.append(
+                {
+                    "step": step.step_number,
+                    "instruction": step.instruction,
+                    "tool": step.tool_name,
+                    "status": step.status,
+                    "retries": step.retry_count,
+                    "error": step.error if step.error else None,
+                }
+            )
+
         # Calculate efficiency metrics
         duration_sec = None
         if task.completed_at is not None and task.created_at is not None:
             duration_sec = (task.completed_at - task.created_at).total_seconds()
-        
+
         task_analysis = {
             "task": task.user_input,
             "status": task.status,
@@ -199,9 +197,9 @@ RESPOND ONLY WITH JSON."""
             "steps": steps_summary,
             "final_error": task.error_message,
             "reasoning_used": reasoning_used,
-            "search_used": search_used
+            "search_used": search_used,
         }
-        
+
         user_prompt = f"""COMPLETED TASK ANALYSIS:
 
 {json.dumps(task_analysis, indent=2, default=str)}
@@ -214,21 +212,21 @@ Reflect on this task execution:
 5. How reusable is the pattern from this task?
 
 Be specific and actionable. Return JSON only."""
-        
+
         response_text = ""
         try:
             response = await call_groq_with_system(
-    system_prompt=self.SYSTEM_PROMPT,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.3,
-)
-            
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.3,
+            )
+
             # Parse response
             reflection_data = extract_json(response, context="reflection")
             if not reflection_data:
                 raise json.JSONDecodeError("No valid JSON found", response or "", 0)
-            
+
             # Create reflection object
             reflection = Reflection(
                 what_worked=reflection_data.get("what_worked", []),
@@ -236,21 +234,25 @@ Be specific and actionable. Return JSON only."""
                 root_causes=reflection_data.get("root_causes", []),
                 lessons=reflection_data.get("lessons", []),
                 confidence_updates=reflection_data.get("confidence_updates", {}),
-                improvement_suggestions=reflection_data.get("improvement_suggestions", []),
-                pattern_quality=float(reflection_data.get("pattern_quality", 0.5))
+                improvement_suggestions=reflection_data.get(
+                    "improvement_suggestions", []
+                ),
+                pattern_quality=float(reflection_data.get("pattern_quality", 0.5)),
             )
-            
+
             logger.info(
                 "reflection_completed",
                 num_lessons=len(reflection.lessons),
                 pattern_quality=reflection.pattern_quality,
-                confidence_changes=len(reflection.confidence_updates)
+                confidence_changes=len(reflection.confidence_updates),
             )
-            
+
             return reflection
-        
+
         except json.JSONDecodeError as e:
-            logger.error("reflection_json_error", error=str(e), response=response_text[:500])
+            logger.error(
+                "reflection_json_error", error=str(e), response=response_text[:500]
+            )
             # Return empty reflection
             return Reflection(
                 what_worked=[],
@@ -259,9 +261,9 @@ Be specific and actionable. Return JSON only."""
                 lessons=[],
                 confidence_updates={},
                 improvement_suggestions=[],
-                pattern_quality=0.0
+                pattern_quality=0.0,
             )
-        
+
         except Exception as e:
             logger.error("reflection_error", error=str(e))
             # Return empty reflection
@@ -272,5 +274,5 @@ Be specific and actionable. Return JSON only."""
                 lessons=[],
                 confidence_updates={},
                 improvement_suggestions=[],
-                pattern_quality=0.0
+                pattern_quality=0.0,
             )

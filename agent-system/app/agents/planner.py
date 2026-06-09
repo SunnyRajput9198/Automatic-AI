@@ -4,6 +4,7 @@ from typing import List, Dict
 from pydantic import BaseModel
 from app.utils.json_parser import extract_json
 from app.utils.llm import call_groq_with_system
+
 logger = structlog.get_logger()
 
 
@@ -29,7 +30,15 @@ class PlannerAgent:
     """
 
     SYSTEM_PROMPT = """You are a precise task planning agent. Your job is to break down user requests into atomic, executable steps.
+IMPORTANT:
 
+Do NOT use SESSION HISTORY unless the user explicitly asks about:
+- previous task
+- earlier research
+- prior findings
+- what was discussed before
+
+For all other tasks, ignore SESSION HISTORY and plan normally.
 RULES:
 1. Each step must be specific and actionable
 2. Steps must be executable by tools (Python code, shell commands, web operations)
@@ -85,18 +94,18 @@ IMPORTANT NOTES:
 
 RESPONSE FORMAT (JSON only):
 {
-  "steps": [
-    {
-      "step": 1,
-      "instruction": "Use web_search to find Python programming tutorials",
-      "reasoning": "User wants to search for online tutorials"
-    },
-    {
-      "step": 2,
-      "instruction": "Save the top 3 results to a file called tutorials.txt using file_write",
-      "reasoning": "Persist the results for later reference"
-    }
-  ]
+    "steps": [
+        {
+        "step": 1,
+        "instruction": "Use web_search to find Python programming tutorials",
+        "reasoning": "User wants to search for online tutorials"
+        },
+        {
+        "step": 2,
+        "instruction": "Save the top 3 results to a file called tutorials.txt using file_write",
+        "reasoning": "Persist the results for later reference"
+        }
+    ]
 }
 
 BAD EXAMPLES:
@@ -111,7 +120,8 @@ GOOD EXAMPLES:
 ✅ "Use python_executor to calculate fibonacci(100)"
 ✅ "Use web_fetch to get content from https://example.com"
 ✅ "Use file_write to save results to output.txt"
-
+✅ "Summarize findings from previous task using the provided SESSION HISTORY"
+✅ "Answer the user's question using the provided SESSION HISTORY"
 DEFAULT INTERPRETATION:
 - "search" = web_search (unless clearly about files)
 - "find" = web_search (unless clearly about files)
@@ -128,9 +138,70 @@ MULTI-TOPIC QUERIES:
 - "what is X and Y" → ONE web_search covering both
 - "explain X with examples" → ONE web_search, ONE file_write max
 - Keep plans to 2 steps maximum for simple research tasks:
-  Step 1: web_search
-  Step 2: file_write (optional)
-  
+    Step 1: web_search
+    Step 2: file_write (optional)
+SESSION HISTORY contains summaries of previous tasks.
+
+IMPORTANT:
+- SESSION HISTORY is already available in the task description.
+- SESSION HISTORY is NOT a tool.
+- SESSION HISTORY is NOT a file.
+- Never create steps such as:
+    * Use SESSION HISTORY
+    * Read SESSION HISTORY
+    * Query SESSION HISTORY
+    * Retrieve SESSION HISTORY
+- Never use file_read to access SESSION HISTORY.
+- Never assume files like:
+    * session_history.txt
+    * session_history.json
+    * previous_task.txt
+    exist unless explicitly mentioned.
+
+If the user asks:
+- "what was the previous task"
+- "what did you find previously"
+- "summarize previous task"
+- "summarize findings from previous task"
+- "what were the findings"
+
+Then use the SESSION HISTORY already provided and directly produce the answer.
+CRITICAL:
+
+If SESSION HISTORY is available:
+
+- Create EXACTLY ONE step.
+- Do not create extraction steps.
+- Do not create retrieval steps.
+- Do not create parsing steps.
+- Do not create intermediate reasoning steps.
+
+GOOD:
+Step 1: Answer the user's question using the provided SESSION HISTORY
+
+GOOD:
+Step 1: Summarize the previous task using the provided SESSION HISTORY
+
+BAD:
+Step 1: Extract previous task
+Step 2: Extract summary
+Step 3: Extract sources
+Step 4: Extract result count
+Step 5: Combine results
+
+These multi-step extraction plans are forbidden.
+Example:
+
+User:
+"what was the previous task"
+
+GOOD:
+Step 1: Summarize the previous task information from the provided SESSION HISTORY
+
+BAD:
+Step 1: Use SESSION HISTORY to retrieve previous task
+Step 1: Read session_history.json
+Step 1: Use file_read on previous_task.txt
 FILE NAMING RULES:
 - Always use .txt extension for saving research results
 - Never use .pdf, .docx, .xlsx — file_write only supports plain text
@@ -158,6 +229,7 @@ FILE NAMING RULES:
 - Good: results.txt, research.txt, summary.txt
 - Bad: results.pdf, paper.docx
 """
+
     def __init__(self, model: str = "llama-3.1-8b-instant"):
         self.model = model
 
@@ -174,20 +246,20 @@ FILE NAMING RULES:
 Break this down into concrete, executable steps.
 Return JSON only.
 """
-        response=""
+        response = ""
         try:
             response = await call_groq_with_system(
-    system_prompt=self.SYSTEM_PROMPT,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.1,
-)
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.1,
+            )
 
             # ---- ROBUST JSON EXTRACTION ----
             plan_data = extract_json(response, context="planner")
             if not plan_data:
                 raise json.JSONDecodeError("No valid JSON found", response or "", 0)
-            steps = plan_data.get("steps", [])[:10]
+            steps = plan_data.get("steps", [])[:10]# enforce max 10 steps
 
             logger.info("planner_completed", num_steps=len(steps))
 
@@ -246,30 +318,31 @@ The previous approach failed.
 Create a NEW plan that avoids this error.
 Return JSON only.
 """
-
         try:
             response = await call_groq_with_system(
-    system_prompt=self.REPLAN_SYSTEM_PROMPT,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.1,
-)
+                system_prompt=self.REPLAN_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.1,
+            )
 
             plan_data = extract_json(response, context="replanner")
             if not plan_data:
                 raise json.JSONDecodeError("No valid JSON found", response or "", 0)
-            steps = plan_data.get("steps", [])[:10] # enforce max 10 steps
+            steps = plan_data.get("steps", [])[:10]  # enforce max 10 steps
             validated_steps: List[Dict] = []
             for idx, step in enumerate(steps, start=1):
                 instruction = step.get("instruction")
                 if not instruction:
                     logger.warning("planner_replan_invalid_step", step=step)
                     continue
-                validated_steps.append({
-                    "step": step.get("step", idx),
-                    "instruction": instruction,
-                    "reasoning": step.get("reasoning", ""),
-                })
+                validated_steps.append(
+                    {
+                        "step": step.get("step", idx),
+                        "instruction": instruction,
+                        "reasoning": step.get("reasoning", ""),
+                    }
+                )
 
             if not validated_steps:
                 raise ValueError("Replan produced no valid steps")

@@ -1,10 +1,12 @@
 import asyncio
 import uuid
+from langgraph.func import task
 import structlog
 from datetime import datetime
 from typing import Any, Dict, Optional
 import json
 import time
+from app.utils.file_manager import FileManager
 from pathlib import Path
 from app.utils.websocket_manager import cancellation_store
 from app.orchestrator.recovery_manager import RecoveryManager
@@ -30,9 +32,6 @@ from app.agents.memory.tool_failure_memory import ToolFailureMemory
 
 logger = structlog.get_logger()
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def classify_failure(error: Optional[str]) -> str:
     """Map a raw error string to a coarse failure category for metrics."""
@@ -48,6 +47,7 @@ def classify_failure(error: Optional[str]) -> str:
     return "UNKNOWN"
 
 
+# creates task/task_id.json file in traces/ directory with all the metrics for that task, which can be used for analysis and debugging
 def export_task_trace(metrics: dict) -> None:
     """Write per-task JSON trace to the traces/ directory."""
     Path("traces").mkdir(exist_ok=True)
@@ -64,6 +64,7 @@ def finalize_and_export(task_metrics: dict) -> None:
 # ---------------------------------------------------------------------------
 # Main orchestration entry point
 # ---------------------------------------------------------------------------
+
 
 async def execute_task_v3(task_id: str) -> None:
     """
@@ -122,7 +123,7 @@ async def execute_task_v3(task_id: str) -> None:
     # FIX: extract reasoning_dict once so we never call .model_dump() 5×
     # on the same object, and so the None-guard is in one place.
     reasoning_output: Optional[ReasoningOutput] = None
-    reasoning_dict: Optional[dict] = None   # populated after Phase 0a succeeds
+    reasoning_dict: Optional[dict] = None  # populated after Phase 0a succeeds
     should_search = False
 
     try:
@@ -134,6 +135,103 @@ async def execute_task_v3(task_id: str) -> None:
                 return
 
             context: Dict[str, Any] = {"task_description": task.user_input}
+
+            # Load session context if task belongs to a session
+            if task.session_id:
+                previous_tasks = (
+                    db.query(Task)
+                    .filter(
+                        Task.session_id == task.session_id,
+                        Task.id != task_id,
+                        Task.status == TaskStatus.COMPLETED,
+                    )
+                    .order_by(Task.created_at.desc())
+                    .limit(3)
+                    .all()
+                )
+
+                if previous_tasks:
+                    session_context = []
+                    for prev_task in reversed(previous_tasks):
+                        # Only learn from successful tasks
+                        if prev_task.status != TaskStatus.COMPLETED:
+                            continue
+
+                        # Skip memory/session-history questions
+                        task_text = prev_task.user_input.lower()
+
+                        memory_keywords = [
+                            "previous task",
+                            "session history",
+                            "what did you find",
+                            "summarize previous",
+                            "findings from previous",
+                            "what was the previous",
+                            "previous research",
+                            "discussed in the previous",
+                            "3 bullet points",
+                            "earlier task",
+                        ]
+
+                        if any(k in task_text for k in memory_keywords):
+                            continue
+
+                        prev_ctx = (
+                            db.query(TaskContext)
+                            .filter(TaskContext.task_id == prev_task.id)
+                            .first()
+                        )
+                        output = ""
+                        if prev_ctx:
+                            context_data = prev_ctx.context_data or {}
+                            output = context_data.get("week4_output", "")
+
+                        if not output:
+                            completed_steps = (
+                                db.query(Step)
+                                .filter(
+                                    Step.task_id == prev_task.id,
+                                    Step.status == StepStatus.COMPLETED,
+                                )
+                                .order_by(Step.step_number.desc())
+                                .all()
+                            )
+
+                            filtered_results = []
+
+                            for s in completed_steps:
+                                if not s.result:
+                                    continue
+
+                                if "ENGINEERING EXECUTION" in s.result:
+                                    continue
+
+                                if "All agents failed" in s.result:
+                                    continue
+
+                                filtered_results.append(s.result[:300])
+
+                            output = "\n".join(filtered_results)
+                        logger.info(
+    "session_context_debug",
+    task=prev_task.user_input,
+    output_preview=output[:300],
+)
+                        session_context.append(
+                            {
+                                "task": prev_task.user_input,
+                                "status": prev_task.status,
+                                "output": output[:500],
+                                "files": prev_ctx.created_files if prev_ctx else [],
+                            }
+                        )
+
+                    context["session_history"] = session_context
+                    logger.info(
+                        "session_context_loaded",
+                        session_id=task.session_id,
+                        num_previous_tasks=len(previous_tasks),
+                    )
             task.status = TaskStatus.RUNNING
             db.commit()
 
@@ -155,10 +253,12 @@ async def execute_task_v3(task_id: str) -> None:
             logger.info("orchestrator_reasoning_phase", task=task.user_input)
             try:
                 t0 = time.time()
-                reasoning_output = await reasoner.reason(task_description=task.user_input)
-                # FIX: .model_dump() not .dict() — pydantic==2.5.3 (v2)
+                reasoning_output = await reasoner.reason(
+                    task_description=task.user_input
+                )
+
                 reasoning_dict = reasoning_output.model_dump()
-                
+
                 global_cost_tracker.record_llm_call(
                     agent="reasoner",
                     model=reasoner.model,
@@ -181,12 +281,15 @@ async def execute_task_v3(task_id: str) -> None:
                     confidence=reasoning_output.confidence,
                     strategy=reasoning_output.strategy,
                 )
-                await ws_manager.emit(task_id, {
-                    "phase": "reasoning",
-                    "status": "completed",
-                    "problem_type": reasoning_output.problem_type,
-                    "confidence": reasoning_output.confidence
-                })
+                await ws_manager.emit(
+                    task_id,
+                    {
+                        "phase": "reasoning",
+                        "status": "completed",
+                        "problem_type": reasoning_output.problem_type,
+                        "confidence": reasoning_output.confidence,
+                    },
+                )
                 if cancellation_store.is_cancelled(task_id):
                     cancellation_store.clear(task_id)
                     return
@@ -204,29 +307,63 @@ async def execute_task_v3(task_id: str) -> None:
                     context["preferred_agent"] = preferred_agent
                     logger.info("preferred_agent_applied", agent=preferred_agent)
 
-                logger.info("orchestrator_coordination_phase")
-                coordination_result = await coordinator.coordinate(
-                    task.user_input, context=context
+                memory_keywords = [
+                    "previous task",
+                    "previous research",
+                    "what did you find",
+                    "earlier task",
+                    "session history",
+                    "findings from previous",
+                ]
+
+                is_memory_query = any(
+                    k in task.user_input.lower() for k in memory_keywords
                 )
 
-                context.update({
-                    "reasoning": reasoning_dict,           # already a dict or None
-                    "week4_output": coordination_result.final_output,
-                })
+                if not is_memory_query:
+                    logger.info("orchestrator_coordination_phase")
 
-                task_metrics["week4_agents_used"] = coordination_result.total_agents
-                task_metrics["week4_successful_agents"] = coordination_result.successful_agents
+                    coordination_result = await coordinator.coordinate(
+                        task.user_input, context=context
+                    )
+                    logger.info(
+    "coordination_result_debug",
+    success=coordination_result.success,
+    successful_agents=coordination_result.successful_agents,
+    final_output=coordination_result.final_output[:500]
+)
+                    context.update(
+                        {
+                            "reasoning": reasoning_dict,
+                            "week4_output": coordination_result.final_output,
+                        }
+                    )
+                    
+                    task_metrics["week4_agents_used"] = coordination_result.total_agents
+                    task_metrics["week4_successful_agents"] = (
+                        coordination_result.successful_agents
+                    )
+                    await ws_manager.emit(
+        task_id,
+        {
+            "phase": "coordination",
+            "status": "completed",
+            "agents_used": coordination_result.total_agents,
+        },
+    )
 
-                logger.info(
-                    "orchestrator_coordination_completed",
-                    agents_used=coordination_result.total_agents,
-                    successful=coordination_result.successful_agents,
-                )
-                await ws_manager.emit(task_id, {
-                    "phase": "coordination",
-                    "status": "completed",
-                    "agents_used": coordination_result.total_agents
-                })
+                else:
+                    logger.info(
+                        "skipping_coordination_for_memory_query",
+                        task=task.user_input,
+                    )
+                    await ws_manager.emit(
+                        task_id,
+                        {
+                            "phase": "coordination",
+                            "status": "completed",
+                        },
+                    )
                 if cancellation_store.is_cancelled(task_id):
                     cancellation_store.clear(task_id)
                     return
@@ -271,7 +408,9 @@ async def execute_task_v3(task_id: str) -> None:
                 should_search, search_reason = search_decider.should_search(
                     task_description=task.user_input,
                     reasoning=reasoning_output,
-                    memory_confidence=memory_confidence if memory_confidence > 0 else None,
+                    memory_confidence=(
+                        memory_confidence if memory_confidence > 0 else None
+                    ),
                     similar_memories=similar_memories,
                 )
                 task_metrics["search_decision"] = {
@@ -283,14 +422,57 @@ async def execute_task_v3(task_id: str) -> None:
                     should_search=should_search,
                     reason=search_reason,
                 )
-
             # ================================================================
             # PHASE 3: PLANNING
             # ================================================================
             logger.info("orchestrator_planning")
             try:
                 t0 = time.time()
-                plan = await planner.plan(task.user_input)
+                # Build task description with session context
+                task_description = task.user_input
+                logger.info("planner_input", task_description=task_description[:2000])
+                memory_keywords = [
+                    "previous task",
+                    "previous research",
+                    "what did you find",
+                    "earlier task",
+                    "session history",
+                    "findings from previous",
+                ]
+
+                is_memory_query = any(
+                    k in task.user_input.lower() for k in memory_keywords
+                )
+
+                if context.get("session_history") and is_memory_query:
+                    history_text = "\n".join([f"""
+                    Previous Task:
+                    {h['task']}
+
+                    Result Summary:
+                    {h['output'][:300]}
+                    """ for h in context["session_history"]])
+                    history_text_truncated = history_text[:500]  # limit context size
+                    task_description = f"""
+CURRENT TASK:
+{task.user_input}
+
+SESSION HISTORY:
+{history_text_truncated}
+
+IMPORTANT:
+The SESSION HISTORY above is already available.
+
+DO NOT:
+- use file_read
+- use file_list
+- search for session_history.json
+- search workspace for previous results
+
+Use the SESSION HISTORY directly when answering questions about previous tasks.
+"""
+
+                plan = await planner.plan(task_description)
                 global_cost_tracker.record_llm_call(
                     agent="planner",
                     model=planner.model,
@@ -321,13 +503,15 @@ async def execute_task_v3(task_id: str) -> None:
                     return
 
                 step_number = step_data["step"]
-                db.add(Step(
-                    id=str(uuid.uuid4()),
-                    task_id=task_id,
-                    step_number=step_data["step"],
-                    instruction=step_data["instruction"],
-                    status=StepStatus.PENDING,
-                ))
+                db.add(
+                    Step(
+                        id=str(uuid.uuid4()),
+                        task_id=task_id,
+                        step_number=step_data["step"],
+                        instruction=step_data["instruction"],
+                        status=StepStatus.PENDING,
+                    )
+                )
                 global_cost_tracker.record_step()
                 step_numbers.append(step_data["step"])
             db.commit()
@@ -335,18 +519,26 @@ async def execute_task_v3(task_id: str) -> None:
             # FIX: fetch all steps at once instead of one query per step (N+1)
             steps_by_number: Dict[int, Step] = {
                 s.step_number: s
-                for s in db.query(Step).filter(
+                for s in db.query(Step)
+                .filter(
                     Step.task_id == task_id,
                     Step.step_number.in_(step_numbers),
-                ).all()
+                )
+                .all()
             }
 
             logger.info("orchestrator_plan_created", num_steps=len(plan))
-            await ws_manager.emit(task_id, {
-                "phase": "planning",
-                "status": "completed",
-                "steps": [{"number": s["step"], "instruction": s["instruction"]} for s in plan]
-            })
+            await ws_manager.emit(
+                task_id,
+                {
+                    "phase": "planning",
+                    "status": "completed",
+                    "steps": [
+                        {"number": s["step"], "instruction": s["instruction"]}
+                        for s in plan
+                    ],
+                },
+            )
             if cancellation_store.is_cancelled(task_id):
                 cancellation_store.clear(task_id)
                 return
@@ -355,7 +547,9 @@ async def execute_task_v3(task_id: str) -> None:
             # ================================================================
             # PHASE 4: EXECUTION
             # ================================================================
-            context.update({"memories": similar_memories, "should_search": should_search})
+            context.update(
+                {"memories": similar_memories, "should_search": should_search}
+            )
 
             for step_data in plan:
                 step_number = step_data["step"]
@@ -366,12 +560,15 @@ async def execute_task_v3(task_id: str) -> None:
                     continue
 
                 logger.info("orchestrator_executing_step", step_number=step_number)
-                await ws_manager.emit(task_id, {
+                await ws_manager.emit(
+                    task_id,
+                    {
                         "phase": "step",
                         "status": "running",
                         "step_number": step_number,
-                        "instruction": step.instruction
-                    })
+                        "instruction": step.instruction,
+                    },
+                )
 
                 max_retries = 2
                 retry_count = 0
@@ -385,7 +582,8 @@ async def execute_task_v3(task_id: str) -> None:
                     try:
                         # Build avoid list from persistent failure memory
                         context["avoid_tools"] = [
-                            t for t in ["python_executor", "shell_executor"]
+                            t
+                            for t in ["python_executor", "shell_executor"]
                             if tool_failure_memory.should_avoid(t)
                         ]
 
@@ -401,16 +599,11 @@ async def execute_task_v3(task_id: str) -> None:
                             duration_ms=(time.time() - t0) * 1000,
                         )
 
-                        # FIX: WebSearchTool sets metadata['source']='DuckDuckGo',
-                        # not metadata['tool_name']='web_search'.
-                        # The old check was always False — searches were never counted.
-                        if tool_result.metadata.get("source") == "wikipedia + arxiv":
+                        if tool_result.metadata.get("tool_name") == "web_search":
                             global_cost_tracker.record_search()
 
                         step.result = tool_result.output
                         step.error = tool_result.error
-                        # FIX: metadata is always a dict (Pydantic default={})
-                        # so the 'if tool_result.metadata else None' guard is dead code
                         step.tool_name = tool_result.metadata.get("tool_name")
                         db.commit()
 
@@ -419,8 +612,12 @@ async def execute_task_v3(task_id: str) -> None:
                             step_number=step_number,
                             success=tool_result.success,
                         )
-                        if tool_result.success and tool_result.metadata.get("tool_name"):
-                            tool_failure_memory.reset_failures(tool_result.metadata["tool_name"])
+                        if tool_result.success and tool_result.metadata.get(
+                            "tool_name"
+                        ):
+                            tool_failure_memory.reset_failures(
+                                tool_result.metadata["tool_name"]
+                            )
 
                         t0 = time.time()
                         evaluation = await critic.evaluate(
@@ -443,16 +640,18 @@ async def execute_task_v3(task_id: str) -> None:
                             reason=evaluation.reason,
                         )
 
-                        task_metrics["step_traces"].append({
-                            "step_number": step_number,
-                            "attempt": retry_count,
-                            "instruction": step.instruction,
-                            "tool_success": tool_result.success,
-                            "error": tool_result.error,
-                            "verdict": evaluation.verdict.value,
-                            "reason": evaluation.reason,
-                            "timestamp": datetime.utcnow().isoformat(),
-                        })
+                        task_metrics["step_traces"].append(
+                            {
+                                "step_number": step_number,
+                                "attempt": retry_count,
+                                "instruction": step.instruction,
+                                "tool_success": tool_result.success,
+                                "error": tool_result.error,
+                                "verdict": evaluation.verdict.value,
+                                "reason": evaluation.reason,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            }
+                        )
 
                         # ── PASS ──────────────────────────────────────────
                         if evaluation.verdict == Verdict.PASS:
@@ -460,12 +659,15 @@ async def execute_task_v3(task_id: str) -> None:
                             step.status = StepStatus.COMPLETED
                             step.completed_at = datetime.utcnow()
                             step_succeeded = True
-                            await ws_manager.emit(task_id, {
-                                "phase": "step",
-                                "status": "completed",
-                                "step_number": step_number,
-                                "result": tool_result.output[:300]
-                            })
+                            await ws_manager.emit(
+                                task_id,
+                                {
+                                    "phase": "step",
+                                    "status": "completed",
+                                    "step_number": step_number,
+                                    "result": tool_result.output[:300],
+                                },
+                            )
 
                             context[f"step_{step_number}_output"] = tool_result.output
                             context[f"step_{step_number}_success"] = True
@@ -475,7 +677,8 @@ async def execute_task_v3(task_id: str) -> None:
                                 # FIX: reassign so SQLAlchemy detects the JSON column change.
                                 # In-place .append() is silently ignored by the ORM.
                                 task_context.created_files = [
-                                    *(task_context.created_files or []), filename
+                                    *(task_context.created_files or []),
+                                    filename,
                                 ]
                                 task_metrics["created_files"].append(filename)
 
@@ -522,11 +725,10 @@ async def execute_task_v3(task_id: str) -> None:
                                     reason=decision.reason,
                                 )
 
-                                # FIX: use elif — actions are mutually exclusive.
-                                # The previous chain of bare `if` blocks was
-                                # misleading even though `continue`/`break`/`return`
-                                # prevented multiple from firing.
-                                if decision.action in ("retry", "retry_with_smaller_prompt"):
+                                if decision.action in (
+                                    "retry",
+                                    "retry_with_smaller_prompt",
+                                ):
                                     if decision.action == "retry_with_smaller_prompt":
                                         context["prompt_reduction"] = True
                                     retry_count += 1
@@ -545,7 +747,9 @@ async def execute_task_v3(task_id: str) -> None:
                                         step.result = switched_result.output
                                         step.status = StepStatus.COMPLETED
                                         step.completed_at = datetime.utcnow()
-                                        context[f"step_{step_number}_output"] = switched_result.output
+                                        context[f"step_{step_number}_output"] = (
+                                            switched_result.output
+                                        )
                                         context[f"step_{step_number}_success"] = True
                                         context["recovered_by_agent"] = new_agent
                                         step_succeeded = True
@@ -583,11 +787,13 @@ async def execute_task_v3(task_id: str) -> None:
                                 f"Step {step_number} failed: {evaluation.reason}"
                             )
                             task.completed_at = datetime.utcnow()
-                            task_metrics["failures"].append({
-                                "step_number": step_number,
-                                "error": evaluation.reason,
-                                "category": classify_failure(step.error),
-                            })
+                            task_metrics["failures"].append(
+                                {
+                                    "step_number": step_number,
+                                    "error": evaluation.reason,
+                                    "category": classify_failure(step.error),
+                                }
+                            )
                             db.commit()
                             finalize_and_export(task_metrics)
                             global_cost_tracker.complete_task(success=False)
@@ -604,18 +810,19 @@ async def execute_task_v3(task_id: str) -> None:
                         step.error = str(e)
                         step.status = StepStatus.FAILED
                         task.status = TaskStatus.FAILED
-                        await ws_manager.emit(task_id, {
-                            "phase": "failed",
-                            "status": "failed",
-                            "error": str(e)
-                        })
+                        await ws_manager.emit(
+                            task_id,
+                            {"phase": "failed", "status": "failed", "error": str(e)},
+                        )
                         task.error_message = f"Step {step_number} crashed: {e}"
                         task.completed_at = datetime.utcnow()
-                        task_metrics["failures"].append({
-                            "step_number": step_number,
-                            "error": str(e),
-                            "category": "ORCHESTRATOR_ERROR",
-                        })
+                        task_metrics["failures"].append(
+                            {
+                                "step_number": step_number,
+                                "error": str(e),
+                                "category": "ORCHESTRATOR_ERROR",
+                            }
+                        )
                         db.commit()
                         finalize_and_export(task_metrics)
                         global_cost_tracker.complete_task(success=False)
@@ -629,11 +836,13 @@ async def execute_task_v3(task_id: str) -> None:
                     task.status = TaskStatus.FAILED
                     task.error_message = f"Step {step_number} exhausted retries"
                     task.completed_at = datetime.utcnow()
-                    task_metrics["failures"].append({
-                        "step_number": step_number,
-                        "error": "Exhausted retries",
-                        "category": "RETRY_LIMIT_EXCEEDED",
-                    })
+                    task_metrics["failures"].append(
+                        {
+                            "step_number": step_number,
+                            "error": "Exhausted retries",
+                            "category": "RETRY_LIMIT_EXCEEDED",
+                        }
+                    )
                     db.commit()
                     finalize_and_export(task_metrics)
                     global_cost_tracker.complete_task(success=False)
@@ -644,14 +853,18 @@ async def execute_task_v3(task_id: str) -> None:
             # ================================================================
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.utcnow()
+            logger.info(
+    "saving_task_context",
+    task=task.user_input,
+    week4_output=context.get("week4_output", "")[:500],
+)
             task_context.context_data = context
             db.commit()
 
             logger.info("orchestrator_task_completed", task_id=task_id)
-            await ws_manager.emit(task_id, {
-    "phase": "completed",
-    "status": "completed"
-})
+            await ws_manager.emit(
+                task_id, {"phase": "completed", "status": "completed"}
+            )
 
             try:
                 best_agent = context.get("recovered_by_agent", "executor")
@@ -660,7 +873,9 @@ async def execute_task_v3(task_id: str) -> None:
                 )
                 logger.info(
                     "agent_preference_learned",
-                    task_type=reasoning_output.problem_type if reasoning_output else "general",
+                    task_type=(
+                        reasoning_output.problem_type if reasoning_output else "general"
+                    ),
                     agent=best_agent,
                 )
             except Exception as e:
@@ -670,7 +885,7 @@ async def execute_task_v3(task_id: str) -> None:
                 t0 = time.time()
                 reflection_output = await reflection_agent.reflect(
                     task=task,
-                    reasoning_used=reasoning_dict,   # dict or None — no .model_dump() needed
+                    reasoning_used=reasoning_dict,  # dict or None — no .model_dump() needed
                     search_used=should_search,
                 )
                 global_cost_tracker.record_llm_call(
@@ -697,7 +912,9 @@ async def execute_task_v3(task_id: str) -> None:
                         reasoning_output.problem_type if reasoning_output else "general"
                     ),
                 )
-                task_metrics["confidence_updates"] = len(reflection_output.confidence_updates)
+                task_metrics["confidence_updates"] = len(
+                    reflection_output.confidence_updates
+                )
 
                 memory_id = await conf_memory.store_with_confidence(
                     pattern_type="success",

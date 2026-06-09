@@ -1,5 +1,3 @@
-
-
 import json
 import structlog
 from typing import Dict, Any
@@ -7,6 +5,7 @@ from enum import Enum
 from app.utils.json_parser import extract_json
 from app.tools.base import ToolResult
 from app.utils.llm import call_groq_with_system
+
 logger = structlog.get_logger()
 
 
@@ -49,9 +48,9 @@ VERDICT OPTIONS:
 
 RESPONSE FORMAT (JSON only):
 {
-  "verdict": "PASS|RETRY|FAIL",
-  "reason": "detailed explanation of why",
-  "suggestions": "specific changes to try (only for RETRY)"
+    "verdict": "PASS|RETRY|FAIL",
+    "reason": "detailed explanation of why",
+    "suggestions": "specific changes to try (only for RETRY)"
 }
 
 EVALUATION CRITERIA:
@@ -100,7 +99,7 @@ RESPOND ONLY WITH JSON.
 
 TOOL EXECUTION:
 - Success: {tool_result.success}
-- Output: {tool_result.output[:600] if tool_result.output else "(empty)"}
+- Output: {tool_result.output[:500] if tool_result.output else "(empty)"}
 - Error: {tool_result.error if tool_result.error else "(none)"}
 - Metadata: {json.dumps(tool_result.metadata)}
 
@@ -111,11 +110,11 @@ RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
 
         try:
             response = await call_groq_with_system(
-    system_prompt=self.SYSTEM_PROMPT,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.1,
-)
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.1,
+            )
 
             # ---- ROBUST JSON EXTRACTION ----
             evaluation = extract_json(response, context="critic")
