@@ -133,7 +133,7 @@ RESPOND ONLY WITH VALID JSON.
         # Deterministic fast-path: no LLM call needed for trivial cases
         # ------------------------------------------------------------------
         instruction_l = instruction.lower()
-    
+
         logger.info("executor_fast_path_check", instruction_l=instruction_l[:100])
         logger.info("executor_context_keys", keys=list(context.keys()))
         try:
@@ -152,18 +152,41 @@ RESPOND ONLY WITH VALID JSON.
                 if "session_history" in context:
                     history = context["session_history"]
 
-                    output = []
+                    history_text = "\n\n".join(
+                        h.get("output", "")[:1000] for h in history
+                    )
 
-                    for i, h in enumerate(history, 1):
-                        output.append(f"Task {i}: {h.get('task', '')}")
+                    prompt = f"""
+                    User question:
+                    {instruction}
 
-                        if h.get("output"):
-                            output.append(h["output"][:1000])
+                    Session history:
+                    {history_text}
+
+                    Answer the user's question using the session history.
+
+                    Do not repeat the raw history.
+                    Provide a concise answer.
+                    Use bullet points if appropriate.
+                    """
+
+                    logger.info("session_history_llm_prompt", prompt=prompt[:2000])
+
+                    response = await call_llm_with_system(
+                        system_prompt="""
+                        You answer questions using session history.
+
+                        Do not repeat raw history.
+                        Provide concise answers.
+                        Use bullet points for findings.
+                        """,
+                        user_prompt=prompt,
+                    )
 
                     return ToolResult(
                         success=True,
-                        output="\n\n".join(output),
-                        metadata={"source": "session_history"}
+                        output=response,
+                        metadata={"source": "session_history"},
                     )
         except Exception as e:
             logger.warning("executor_session_fast_path_failed", error=str(e))
