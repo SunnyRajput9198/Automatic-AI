@@ -213,10 +213,10 @@ async def execute_task_v3(task_id: str) -> None:
 
                             output = "\n".join(filtered_results)
                         logger.info(
-    "session_context_debug",
-    task=prev_task.user_input,
-    output_preview=output[:300],
-)
+                            "session_context_debug",
+                            task=prev_task.user_input,
+                            output_preview=output[:300],
+                        )
                         session_context.append(
                             {
                                 "task": prev_task.user_input,
@@ -308,13 +308,19 @@ async def execute_task_v3(task_id: str) -> None:
                     logger.info("preferred_agent_applied", agent=preferred_agent)
 
                 memory_keywords = [
-                    "previous task",
-                    "previous research",
-                    "what did you find",
-                    "earlier task",
-                    "session history",
-                    "findings from previous",
-                ]
+    "previous task",
+    "previous research",
+    "what did you find",
+    "earlier task",
+    "session history",
+    "findings from previous",
+    "top findings",
+    "findings from the research",
+    "from the research",
+    "previous findings",
+    "what were the findings",
+    "research findings",
+]
 
                 is_memory_query = any(
                     k in task.user_input.lower() for k in memory_keywords
@@ -327,30 +333,30 @@ async def execute_task_v3(task_id: str) -> None:
                         task.user_input, context=context
                     )
                     logger.info(
-    "coordination_result_debug",
-    success=coordination_result.success,
-    successful_agents=coordination_result.successful_agents,
-    final_output=coordination_result.final_output[:500]
-)
+                        "coordination_result_debug",
+                        success=coordination_result.success,
+                        successful_agents=coordination_result.successful_agents,
+                        final_output=coordination_result.final_output[:500],
+                    )
                     context.update(
                         {
                             "reasoning": reasoning_dict,
                             "week4_output": coordination_result.final_output,
                         }
                     )
-                    
+
                     task_metrics["week4_agents_used"] = coordination_result.total_agents
                     task_metrics["week4_successful_agents"] = (
                         coordination_result.successful_agents
                     )
                     await ws_manager.emit(
-        task_id,
-        {
-            "phase": "coordination",
-            "status": "completed",
-            "agents_used": coordination_result.total_agents,
-        },
-    )
+                        task_id,
+                        {
+                            "phase": "coordination",
+                            "status": "completed",
+                            "agents_used": coordination_result.total_agents,
+                        },
+                    )
 
                 else:
                     logger.info(
@@ -457,19 +463,15 @@ async def execute_task_v3(task_id: str) -> None:
 CURRENT TASK:
 {task.user_input}
 
-SESSION HISTORY:
+SESSION HISTORY (from previous tasks in this conversation):
 {history_text_truncated}
 
-IMPORTANT:
-The SESSION HISTORY above is already available.
-
-DO NOT:
-- use file_read
-- use file_list
-- search for session_history.json
-- search workspace for previous results
-
-Use the SESSION HISTORY directly when answering questions about previous tasks.
+INSTRUCTIONS FOR USING SESSION HISTORY:
+- If the user asks about previous findings, extract and list specific items from SESSION HISTORY
+- If the user asks for top findings/results, parse the SESSION HISTORY output and list them clearly
+- If the user asks to summarize, write a proper summary of SESSION HISTORY content
+- Use python_executor to process and format the SESSION HISTORY into a clean answer
+- Do NOT just echo the raw SESSION HISTORY — extract and format the relevant information
 """
 
                 plan = await planner.plan(task_description)
@@ -854,10 +856,10 @@ Use the SESSION HISTORY directly when answering questions about previous tasks.
             task.status = TaskStatus.COMPLETED
             task.completed_at = datetime.utcnow()
             logger.info(
-    "saving_task_context",
-    task=task.user_input,
-    week4_output=context.get("week4_output", "")[:500],
-)
+                "saving_task_context",
+                task=task.user_input,
+                week4_output=context.get("week4_output", "")[:500],
+            )
             task_context.context_data = context
             db.commit()
 
@@ -867,10 +869,13 @@ Use the SESSION HISTORY directly when answering questions about previous tasks.
             )
 
             try:
-                best_agent = context.get("recovered_by_agent", "executor")
-                agent_pref_memory.record_success(
-                    task_description=task.user_input, agent_name=best_agent
-                )
+                best_agent = context.get("preferred_agent") or context.get("recovered_by_agent")
+
+                if best_agent in {"researcher", "engineer", "writer"}:
+                    agent_pref_memory.record_success(
+                        task_description=task.user_input,
+                        agent_name=best_agent,
+                    )
                 logger.info(
                     "agent_preference_learned",
                     task_type=(

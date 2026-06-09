@@ -48,7 +48,26 @@ class AgentPreferenceMemory:
 
     def get_preferred_agent(self, task_description: str):
         key = self._task_key(task_description)
-        return self.preferences.get(key)
+        agent = self.preferences.get(key)
+
+        valid_agents = {
+            "researcher",
+            "engineer",
+            "writer",
+        }
+
+        if agent is None:
+            return None
+
+        if agent not in valid_agents:
+            logger.warning(
+                "invalid_agent_preference",
+                key=key,
+                agent=agent
+            )
+            return None
+
+        return agent
 
     def _task_key(self, task: str) -> str:
         return " ".join(task.lower().split()[:4])

@@ -120,8 +120,8 @@ GOOD EXAMPLES:
 ✅ "Use python_executor to calculate fibonacci(100)"
 ✅ "Use web_fetch to get content from https://example.com"
 ✅ "Use file_write to save results to output.txt"
-✅ "Summarize findings from previous task using the provided SESSION HISTORY"
-✅ "Answer the user's question using the provided SESSION HISTORY"
+✅ "Extract findings from SESSION HISTORY and answer the user's question"
+✅ "Summarize key results contained in SESSION HISTORY"
 DEFAULT INTERPRETATION:
 - "search" = web_search (unless clearly about files)
 - "find" = web_search (unless clearly about files)
@@ -165,29 +165,83 @@ If the user asks:
 - "summarize findings from previous task"
 - "what were the findings"
 
-Then use the SESSION HISTORY already provided and directly produce the answer.
-CRITICAL:
+Then use the SESSION HISTORY already provided.
 
+Do NOT repeat or dump SESSION HISTORY.
+
+Instead:
+- Extract relevant facts
+GOOD:
+Step 1: Extract the relevant information from SESSION HISTORY and answer the user's question
+
+GOOD:
+Step 1: Summarize the findings contained in SESSION HISTORY
+
+GOOD:
+Step 1: Identify the key results in SESSION HISTORY and present them clearly
+
+GOOD:
+Step 1: Answer the user's question using information from SESSION HISTORY, not by repeating it
+- Summarize findings
+- Answer the user's question
+- Format results clearly (bullet points when appropriate)
+CRITICAL:
+MEMORY QUERIES MUST PRODUCE EXACTLY ONE STEP.
+
+For any request about:
+- previous task
+- previous findings
+- previous research
+- session history
+- conclusions
+- summaries
+
+Return exactly ONE step that directly answers the question.
+
+Do NOT create:
+- extraction steps
+- retrieval steps
+- formatting steps
+- python_executor steps
+
+BAD:
+Step 1: Extract findings
+Step 2: Format findings
+
+GOOD:
+Step 1: Answer the user's question using SESSION HISTORY
 If SESSION HISTORY is available:
+- Never return raw SESSION HISTORY.
+- Never copy SESSION HISTORY verbatim.
+- Extract information and answer the user's question.
+- For requests about findings, results, conclusions, or summaries:
+    return concise bullet points.
 
 - Create EXACTLY ONE step.
-- Do not create extraction steps.
-- Do not create retrieval steps.
+- Use a single step.
+- Extract relevant information within that step.
+- Do not create multiple extraction/retrieval steps.
 - Do not create parsing steps.
 - Do not create intermediate reasoning steps.
 
 GOOD:
-Step 1: Answer the user's question using the provided SESSION HISTORY
+Step 1: Answer the user's question using information from SESSION HISTORY.
 
 GOOD:
-Step 1: Summarize the previous task using the provided SESSION HISTORY
+Step 1: Summarize the key findings contained in SESSION HISTORY.
+
+GOOD:
+Step 1: Extract the top findings from SESSION HISTORY and present them as bullet points.
 
 BAD:
-Step 1: Extract previous task
-Step 2: Extract summary
-Step 3: Extract sources
-Step 4: Extract result count
-Step 5: Combine results
+Step 1: Repeat SESSION HISTORY verbatim.
+
+BAD:
+Step 1: Dump raw SESSION HISTORY.
+
+BAD:
+Step 1: Retrieve SESSION HISTORY.
+
 
 These multi-step extraction plans are forbidden.
 Example:
@@ -196,7 +250,7 @@ User:
 "what was the previous task"
 
 GOOD:
-Step 1: Summarize the previous task information from the provided SESSION HISTORY
+Step 1: Summarize the previous task information using facts from SESSION HISTORY
 
 BAD:
 Step 1: Use SESSION HISTORY to retrieve previous task
@@ -259,7 +313,7 @@ Return JSON only.
             plan_data = extract_json(response, context="planner")
             if not plan_data:
                 raise json.JSONDecodeError("No valid JSON found", response or "", 0)
-            steps = plan_data.get("steps", [])[:10]# enforce max 10 steps
+            steps = plan_data.get("steps", [])[:10]  # enforce max 10 steps
 
             logger.info("planner_completed", num_steps=len(steps))
 
