@@ -26,5 +26,4 @@ __all__ = [
     "CoordinationResult",
     "AgentPerformanceMemory",
     "ResearcherAgent",
-    "WriterAgent"
 ]

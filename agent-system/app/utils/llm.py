@@ -228,11 +228,12 @@ def _sync_groq_call(
 
     response = _groq_client.chat.completions.create(
         model=model,
-        messages=messages,  # Groq uses OpenAI format directly
+        messages=messages,   # type: ignore
+        # Groq uses OpenAI format directly
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    return response.choices[0].message.content
+    return  str(response.choices[0].message.content)
 
 
 async def call_groq(

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 import json
 from app.utils.reference_resolver import ReferenceResolver
+from app.agents.memory.qdrant_memory import QdrantMemory
 import time
 from app.utils.file_manager import FileManager
 from pathlib import Path
@@ -120,7 +121,7 @@ async def execute_task_v3(task_id: str) -> None:
     }
     coordinator = CoordinatorAgent(week4_agents)
     agent_switcher = AgentSwitcher(week4_agents)
-
+    qdrant_memory = QdrantMemory()
     # FIX: extract reasoning_dict once so we never call .model_dump() 5×
     # on the same object, and so the None-guard is in one place.
     reasoning_output: Optional[ReasoningOutput] = None
@@ -354,6 +355,12 @@ async def execute_task_v3(task_id: str) -> None:
                     task_metrics["week4_successful_agents"] = (
                         coordination_result.successful_agents
                     )
+                    if coordination_result.success and task.session_id:
+                        qdrant_memory.store_memory(
+                            session_id=task.session_id,
+                            query=task.user_input,
+                            result=coordination_result.final_output
+                        )
                     await ws_manager.emit(
                         task_id,
                         {
@@ -433,6 +440,19 @@ async def execute_task_v3(task_id: str) -> None:
                     should_search=should_search,
                     reason=search_reason,
                 )
+                
+                if task.session_id:
+                    memories = qdrant_memory.search_memory(
+                        task.user_input,
+                        limit=2
+                    )
+
+                    context["qdrant_memories"] = memories
+
+                    logger.info(
+                        "qdrant_memories_loaded",
+                        count=len(memories)
+                    )
             # ================================================================
             # PHASE 3: PLANNING
             # ================================================================
@@ -440,7 +460,21 @@ async def execute_task_v3(task_id: str) -> None:
             try:
                 t0 = time.time()
                 # Build task description with session context
-                task_description = task.user_input
+                memory_context = ""
+
+                if context.get("qdrant_memories"):
+                    memory_context = "\n\nRELEVANT MEMORIES:\n"
+
+                    for m in context["qdrant_memories"]:
+                        memory_context += f"""
+                Previous Query:
+                {m.get('query','')[:100]}
+
+                Previous Result:
+                {m.get('result', '')[:100]}
+                """
+
+                task_description = task.user_input + memory_context
                 logger.info("planner_input", task_description=task_description[:2000])
                 memory_keywords = [
                     "previous task",

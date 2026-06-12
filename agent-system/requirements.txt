@@ -10,7 +10,9 @@ alembic==1.18.4
 # Config
 pydantic==2.12.5
 pydantic-settings==2.1.0
-
+# Vector Memory
+qdrant-client
+sentence-transformers
 # HTTP
 httpx==0.28.1
 python-multipart==0.0.22
