@@ -1,0 +1,30 @@
+RESEARCH FINDINGS - TOP RESULTS COMPARISON
+
+Query: which one is best?
+Source: wikipedia+arxiv+pubmed+github
+Total Results: 5
+
+------------------------------------------------------------
+
+1. Wikipedia — One Battle After Another
+   Description: One Battle After Another is a 2025 American action-comedy-thriller film produced, written and directed by Paul Thomas Anderson. Inspired by the 1990 novel Vineland by Thomas Pynchon, the film's ensemble cast includes Leonardo DiCaprio, Sean Penn, Benicio del Toro, Regina Hall, Teyana Taylor, and Chase Infiniti. It follows a washed-up former revolutionary who is brought back into conflict when his enemy resurfaces after sixteen years.
+   URL: https://en.wikipedia.org/wiki/One_Battle_After_Another
+
+2. ArXiv — ASVRI-Legal: Fine-Tuning LLMs with Retrieval Augmented Generation for Enhanced Legal Regulation
+   Description: In this study, we explore the fine-tuning of Large Language Models (LLMs) to better support policymakers in their crucial work of understanding, analyzing, and crafting legal regulations. To equip the model with a deep understanding of legal texts, we curated a supervised dataset tailored to the specific needs of the legal domain. Additionally, we integrated the Retrieval-Augmented Generation (RAG) method, enabling the LLM to access and incorporate up-to-date legal knowledge from external sources.
+   URL: http://arxiv.org/abs/2511.03563v1
+
+3. ArXiv — Artificial intelligence based writer identification generates new evidence for the unknown scribes of the Dead Sea Scrolls exemplified by the Great Isaiah Scroll (1QIsaa)
+   Description: The Dead Sea Scrolls are tangible evidence of the Bible's ancient scribal culture. Palaeography - the study of ancient handwriting - can provide access to this scribal culture. However, one of the problems of traditional palaeography is to determine writer identity when the writing style is near uniform. This is exemplified by the Great Isaiah Scroll (1QIsaa). To this end, we used pattern recognition and artificial intelligence techniques to innovate the palaeography of the scrolls regarding writer identification.
+   URL: http://arxiv.org/abs/2010.14476v1
+
+4. ArXiv — Adaptive Conformal Prediction for Reliable and Explainable Medical Image Classification
+   Description: Deep learning models for medical imaging often exhibit overconfidence, creating safety risks in ambiguous diagnostic scenarios. While Conformal Prediction (CP) provides distribution-free statistical guarantees, standard methods such as Regularized Adaptive Prediction Sets (RAPS) optimize for average efficiency and can mask severe failures on difficult inputs. We propose an Adaptive Lambda Criterion for RAPS that minimizes the worst-case coverage violation across prediction set size strata.
+   URL: http://arxiv.org/abs/2605.12917v1
+
+5. PubMed — Proxy patients' perceptions of genetic counselor empathy responses
+   Description: Authors: Bouchard J, MacFarlane I, Veach PM. Published: 2026 Jun 12.
+   URL: https://pubmed.ncbi.nlm.nih.gov/42283877/
+
+------------------------------------------------------------
+Comparison saved from research query: "which one is best?"

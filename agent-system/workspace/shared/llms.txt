@@ -1,0 +1,13 @@
+TOP 3 OPEN SOURCE LLM RESEARCH RESULTS
+
+1. Wikipedia — Large language model
+   A large language model (LLM) is a neural network trained on a vast amount of text for natural language processing tasks, especially language generation. LLMs can typically generate, summarize, translate, and analyze text in many contexts, and are a foundational technology behind modern chatbots. Biased or inaccurate training data can make an LLM's output less reliable.
+   URL: https://en.wikipedia.org/wiki/Large_language_model
+
+2. ArXiv — YouZhi: Towards High-Concurrency Financial LLMs via Adaptive GQA-to-MLA Transition
+   Large language models (LLMs) drive significant financial innovations, yet their high-concurrency deployment is severely bottlenecked by KV cache memory overhead, which inflates infrastructure costs and throttles scalability. To address this, we propose YouZhi-LLM, a highly efficient financial LLM empowered by a comprehensive structural transition and training pipeline natively built on the Huawei Ascend ecosystem. At its algorithmic core, YouZhi-LLM features a layer-adaptive GQA-to-MLA transition.
+   URL: http://arxiv.org/abs/2606.05868v1
+
+3. ArXiv — LangFair: A Python Package for Assessing Bias and Fairness in Large Language Model Use Cases
+   Large Language Models (LLMs) have been observed to exhibit bias in numerous ways, potentially creating or worsening outcomes for specific groups identified by protected attributes such as sex, race, sexual orientation, or age. To help address this gap, we introduce LangFair, an open-source Python package that aims to equip LLM practitioners with the tools to evaluate bias and fairness risks relevant to their specific use cases.
+   URL: http://arxiv.org/abs/2501.03112v1

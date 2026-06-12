@@ -5,6 +5,7 @@ import structlog
 from datetime import datetime
 from typing import Any, Dict, Optional
 import json
+from app.utils.reference_resolver import ReferenceResolver
 import time
 from app.utils.file_manager import FileManager
 from pathlib import Path
@@ -218,13 +219,18 @@ async def execute_task_v3(task_id: str) -> None:
                             output_preview=output[:300],
                         )
                         session_context.append(
-                            {
-                                "task": prev_task.user_input,
-                                "status": prev_task.status,
-                                "output": output[:500],
-                                "files": prev_ctx.created_files if prev_ctx else [],
-                            }
-                        )
+{
+    "task": prev_task.user_input,
+    "status": prev_task.status,
+    "output": output[:500],
+    "files": prev_ctx.created_files if prev_ctx else [],
+    "entities": (
+        prev_ctx.context_data.get("entities", [])
+        if prev_ctx and prev_ctx.context_data
+        else []
+    )
+}
+)
 
                     context["session_history"] = session_context
                     logger.info(
@@ -344,7 +350,6 @@ async def execute_task_v3(task_id: str) -> None:
                             "week4_output": coordination_result.final_output,
                         }
                     )
-
                     task_metrics["week4_agents_used"] = coordination_result.total_agents
                     task_metrics["week4_successful_agents"] = (
                         coordination_result.successful_agents
@@ -473,7 +478,29 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
 - Use python_executor to process and format the SESSION HISTORY into a clean answer
 - Do NOT just echo the raw SESSION HISTORY — extract and format the relevant information
 """
+                # ==========================================================
+                # REFERENCE RESOLUTION
+                # ==========================================================
+                if context.get("session_history"):
+                    resolver = ReferenceResolver()
 
+                    if resolver.has_reference(task.user_input):
+                        resolution = resolver.resolve(
+                            task.user_input,
+                            context["session_history"]
+                        )
+
+                        task_description = resolution["enriched_query"]
+
+                        logger.info(
+                            "reference_resolution_applied",
+                            query=task.user_input,
+                            subject=resolution["resolved_subject"]
+                        )
+                logger.info(
+    "planner_final_input",
+    task_description=task_description[:2000]
+)
                 plan = await planner.plan(task_description)
                 global_cost_tracker.record_llm_call(
                     agent="planner",

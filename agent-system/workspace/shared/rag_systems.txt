@@ -1,0 +1,13 @@
+TOP 3 RAG SYSTEMS RESEARCH RESULTS
+
+1. Wikipedia — Retrieval-augmented generation
+   Retrieval-augmented generation (RAG) is a technique that enables large language models (LLMs) to retrieve and incorporate new information from external data sources. With RAG, LLMs first refer to a specified set of documents, then respond to user queries. These documents supplement information from the LLM's pre-existing training data. This allows LLMs to use domain-specific and/or updated information that is not available in the training data. For example, this enables LLM-based chatbots to access current information.
+   URL: https://en.wikipedia.org/wiki/Retrieval-augmented_generation
+
+2. ArXiv — Engineering the RAG Stack: A Comprehensive Review of the Architecture and Trust Frameworks for Retrieval-Augmented Generation Systems
+   This article provides a comprehensive systematic literature review of academic studies, industrial applications, and real-world deployments from 2018 to 2025, providing a practical guide and detailed overview of modern Retrieval-Augmented Generation (RAG) architectures. RAG offers a modular approach for integrating external knowledge without increasing the capacity of the model as LLM systems expand. Research and engineering practices have been fragmented as a result of the increasing diversity of RAG implementations.
+   URL: http://arxiv.org/abs/2601.05264v1
+
+3. ArXiv — FAIR-RAG: Faithful Adaptive Iterative Refinement for Retrieval-Augmented Generation
+   While Retrieval-Augmented Generation (RAG) mitigates hallucination and knowledge staleness in Large Language Models (LLMs), existing frameworks often falter on complex, multi-hop queries that require synthesizing information from disparate sources. FAIR-RAG introduces a novel approach with a robust mechanism to systematically identify and fill evidence gaps, providing comprehensive context for improved RAG performance.
+   URL: http://arxiv.org/abs/2510.22344v1

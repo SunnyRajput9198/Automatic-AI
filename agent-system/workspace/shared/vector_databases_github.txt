@@ -1,0 +1,14 @@
+TOP 3 RESULTS FOR VECTOR DATABASES GITHUB
+
+1. Wikipedia — Vector database
+   A vector database, vector store or vector search engine is a database that stores and retrieves embeddings of data in vector space. Vector databases typically implement approximate nearest neighbor algorithms so users can search for records semantically similar to a given input, unlike traditional databases which primarily look up records by exact match. Use-cases for vector databases include similarity search, semantic search, multi-modal search, recommendations engines, object detection, and r
+   URL: https://en.wikipedia.org/wiki/Vector_database
+
+2. ArXiv — Infinite Probabilistic Databases
+   Probabilistic databases (PDBs) model uncertainty in data in a quantitative way. In the established formal framework, probabilistic (relational) databases are finite probability spaces over relational database instances. This finiteness can clash with intuitive query behavior (Ceylan et al., KR 2016), and with application scenarios that are better modeled by continuous probability distributions (Dalvi et al., CACM 2009).
+  We formally introduced infinite PDBs in (Grohe and Lindner, PODS 2019) wit
+   URL: http://arxiv.org/abs/2011.14860v6
+
+3. ArXiv — Graph Neural Networks for Databases: A Survey
+   Graph neural networks (GNNs) are powerful deep learning models for graph-structured data, demonstrating remarkable success across diverse domains. Recently, the database (DB) community has increasingly recognized the potentiality of GNNs, prompting a surge of researches focusing on improving database systems through GNN-based approaches. However, despite notable advances, There is a lack of a comprehensive review and understanding of how GNNs could improve DB systems. Therefore, this survey aims
+   URL: http://arxiv.org/abs/2502.12908v2

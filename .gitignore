@@ -9,7 +9,7 @@
 
 # production
 /build
-
+/workspace/shared
 # debug
 npm-debug.log*
 yarn-debug.log*

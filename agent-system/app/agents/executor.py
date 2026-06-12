@@ -141,14 +141,30 @@ RESPOND ONLY WITH VALID JSON.
             reasoning_keywords = [
                 "summarize",
                 "summary",
-                "from the provided session history",
+                "extract",
+                "findings",
+                "previous findings",
+                "previous task",
+                "answer the user's question",
+                "identify the key results",
+                "identify the characteristics",
+                "based on session",
                 "from session history",
                 "from the session history",
-                "previous task",
-                "what was found",
-                "based on session",
+                "from the provided session history",
             ]
-            if any(kw in instruction_l for kw in reasoning_keywords):
+            if "session_history" in context and not any(
+                tool_word in instruction_l
+                for tool_word in [
+                    "web_search",
+                    "web_fetch",
+                    "file_read",
+                    "file_write",
+                    "file_list",
+                    "python_executor",
+                    "shell_executor",
+                ]
+            ):
                 if "session_history" in context:
                     history = context["session_history"]
 
