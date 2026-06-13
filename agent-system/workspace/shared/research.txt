@@ -1,24 +1,46 @@
-TOP 3 RESEARCH RESULTS: Attention Mechanism Papers
+RESEARCH FINDINGS - TOP 10 RESULTS FOR REACT
 
-========================================
+========================================================
 
-1. Wikipedia — Attention Is All You Need
-   "Attention Is All You Need" is a 2017 research paper in machine learning authored by eight scientists and engineers working at Google. The paper introduced a new deep learning architecture known as the transformer, based on the attention mechanism proposed in 2014 by Bahdanau et al. The transformer approach it describes has become the main architecture of a wide variety of artificial intelligence, including large language models.
-   URL: https://en.wikipedia.org/wiki/Attention_Is_All_You_Need
+1. Wikipedia — React (software)
+   React is a free and open-source front-end JavaScript library that aims to make building user interfaces based on components more "seamless". It is maintained by Meta and a community of individual developers and companies. According to the 2025 Stack Overflow Developer Survey, React is one of the most commonly used web technologies.
+   URL: https://en.wikipedia.org/wiki/React_(software)
 
-========================================
+2. ArXiv — Developing a 21st Century Global Library for Mathematics Research
+   Developing a 21st Century Global Library for Mathematics Research discusses how information about what the mathematical literature contains can be formalized and made easier to express, encode, and explore. Many of the tools necessary to make this information system a reality will require much more than indexing and will instead depend on community input paired with machine learning, where mathematicians' expertise can fill the gaps of automatization.
+   URL: http://arxiv.org/abs/1404.1905v1
 
-2. PubMed — Prior knowledge-guided vision-transformer-based unsupervised domain adaptation for intubation prediction in lung disease at one week
-   Authors: Yang J, Henao JAG, Dvornek N
-   Published: 2024 Dec
-   URL: https://pubmed.ncbi.nlm.nih.gov/39515190/
+3. ArXiv — Semantics and Security Issues in JavaScript
+   There is a plethora of research articles describing the deep semantics of JavaScript. Nevertheless, such articles are often difficult to grasp for readers not familiar with formal semantics. This report proposes a digest of the semantics of JavaScript centered around security concerns and provides an overview of the JavaScript language and the misleading semantic points in its design.
+   URL: http://arxiv.org/abs/1212.2341v1
 
-========================================
+4. ArXiv — On the road to percent accuracy IV: ReACT -- computing the non-linear power spectrum beyond ΛCDM
+   To effectively exploit large-scale structure surveys, we depend on accurate and reliable predictions of non-linear cosmological structure formation. The public software package ReACT demonstrates its capability for the fast and accurate calculation of non-linear power spectra from non-standard physics.
+   URL: http://arxiv.org/abs/2005.12184v2
 
-3. GitHub — LiamMaclean216/Pytorch-Transfomer
-   My implementation of the transformer architecture from the Attention is All you need paper applied to time series.
-   Stars: 322
-   Language: Jupyter Notebook
-   URL: https://github.com/LiamMaclean216/Pytorch-Transfomer
+5. PubMed — HMMER web server: 2026 update
+   Authors: Rajković A, Beracochea M, Rogers AB. Published: 2026 Apr 27.
+   URL: https://pubmed.ncbi.nlm.nih.gov/42037125/
 
-========================================
+6. PubMed — JSONWP: a static website generator for protein bioinformatics research
+   Authors: Kilinc M, Jia K, Jernigan RL. Published: 2023.
+   URL: https://pubmed.ncbi.nlm.nih.gov/37904893/
+
+7. PubMed — Samply: A user-friendly smartphone app and web-based means of scheduling and sending mobile notifications for experience-sampling research
+   Authors: Shevchenko Y, Kuhlmann T, Reips UD. Published: 2021 Aug.
+   URL: https://pubmed.ncbi.nlm.nih.gov/33528818/
+
+8. GitHub — sanusanth/javascript-basic-program
+   What is JavaScript and what does it do? JavaScript is a programming language used to make websites interactive. This repository provides basic JavaScript programs and educational content for learning the fundamentals of the language.
+   URL: https://github.com/sanusanth/javascript-basic-program
+
+9. GitHub — Projects-Developer/React-Education-Website-Project
+   The React Education Website Project is a web application built using React, a popular JavaScript library for building user interfaces. Project includes source code, PPT, synopsis, report, documents, base research paper & video tutorials. Stars: 1.
+   URL: https://github.com/Projects-Developer/React-Education-Website-Project
+
+10. GitHub — naranyala/comparative-react-tree-graph-lib
+   This research project provides a rigorous, data-driven comparison of the most prominent JavaScript/TypeScript libraries compatible with React. By evaluating libraries across 16 distinct technical vectors and implementing automated performance benchmarks, this study aims to provide a definitive decision framework for architects and developers. Language: TypeScript.
+   URL: https://github.com/naranyala/comparative-react-tree-graph-lib
+
+========================================================
+Research completed and saved successfully.

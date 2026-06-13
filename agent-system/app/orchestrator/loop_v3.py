@@ -30,6 +30,7 @@ from app.agents.reflection import ReflectionAgent
 from app.agents.search_decider import SearchDecider
 from app.agents.confidence_memory import ConfidenceMemory
 from app.utils.cost_tracker import global_cost_tracker
+from app.agents.memory.tool_success_memory import ToolSuccessMemory
 from app.agents.memory.tool_failure_memory import ToolFailureMemory
 
 logger = structlog.get_logger()
@@ -109,6 +110,7 @@ async def execute_task_v3(task_id: str) -> None:
     executor = ExecutorAgent()
     critic = CriticAgent()
     reflection_agent = ReflectionAgent()
+    tool_success_memory = ToolSuccessMemory()
     tool_failure_memory = ToolFailureMemory()
     search_decider = SearchDecider()
     recovery_manager = RecoveryManager()
@@ -611,8 +613,16 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
             # PHASE 4: EXECUTION
             # ================================================================
             context.update(
-                {"memories": similar_memories, "should_search": should_search}
-            )
+    {
+        "memories": similar_memories,
+        "should_search": should_search,
+        "preferred_tools": tool_success_memory.top_tools(),
+    }
+)
+            logger.info(
+    "preferred_tools_loaded",
+    tools=context["preferred_tools"]
+)
 
             for step_data in plan:
                 step_number = step_data["step"]
@@ -718,6 +728,10 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
 
                         # ── PASS ──────────────────────────────────────────
                         if evaluation.verdict == Verdict.PASS:
+                            if step.tool_name:
+                                tool_success_memory.record_success(
+                                    str(step.tool_name)
+                                )
                             task_metrics["completed_steps"] += 1
                             step.status = StepStatus.COMPLETED
                             step.completed_at = datetime.utcnow()
@@ -762,6 +776,10 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
 
                         # ── FAIL ──────────────────────────────────────────
                         else:
+                            if step.tool_name:
+                                tool_success_memory.record_failure(
+                                    str(step.tool_name)
+                                )
                             logger.error(
                                 "orchestrator_step_failed",
                                 step_number=step_number,

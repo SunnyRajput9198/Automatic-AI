@@ -123,6 +123,9 @@ RESPOND ONLY WITH VALID JSON.
         logger.info("executor_starting", instruction=instruction)
         context = context or {}
         avoid_tools = context.get("avoid_tools", [])
+        preferred_tools = context.get("preferred_tools", [])
+
+        logger.info("executor_preferred_tools", tools=preferred_tools)
 
         # If python_executor is on the avoid list, force file_write instead
         if "python_executor" in avoid_tools:
@@ -321,6 +324,7 @@ RESPOND ONLY WITH VALID JSON.
         system_prompt = self.SYSTEM_PROMPT.replace("{tools_description}", tools_desc)
 
         context_str = ""
+        preferred_tools = context.get("preferred_tools", [])
         if context:
             # Limit context size to prevent recursion issues
             safe_context = {
@@ -344,7 +348,18 @@ RESPOND ONLY WITH VALID JSON.
             context_str = "\n\nCONTEXT FROM PREVIOUS STEPS:\n" + json.dumps(
                 safe_context, indent=2
             )
+        preferred_tools_text = ""
+
+        if preferred_tools:
+            preferred_tools_text = f"""
+        Historically successful tools:
+        {", ".join(preferred_tools)}
+
+        Prefer these tools when appropriate.
+        Do not force them if another tool is clearly better.
+        """
         user_prompt = (
+            f"{preferred_tools_text}\n\n"
             f"STEP INSTRUCTION:\n\n{instruction}{context_str}\n\n"
             "Choose the appropriate tool and generate EXECUTABLE inputs (not instruction text).\n"
             "For python_executor, generate actual Python code.\n"
