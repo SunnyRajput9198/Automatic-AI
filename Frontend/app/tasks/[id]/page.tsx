@@ -138,7 +138,25 @@ export default function TaskPage() {
   const [wsEvents, setWsEvents] = useState<Array<{ phase: string, status: string, [key: string]: any }>>([]);
   const wsRef = React.useRef<WebSocket | null>(null);
   const [selectedFile, setSelectedFile] = useState<{ name: string, content: string } | null>(null);
-
+  const [feedback, setFeedback] = useState<'good' | 'bad' | null>(null);
+  const [feedbackSent, setFeedbackSent] = useState(false);
+  const submitFeedback = async (rating: 'good' | 'bad') => {
+    if (!task || feedbackSent) return;
+    try {
+      await fetch(`${API_BASE_URL}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: task.user_input,
+          feedback: rating,
+        }),
+      });
+      setFeedback(rating);
+      setFeedbackSent(true);
+    } catch (err) {
+      console.error('Feedback failed:', err);
+    }
+  };
   const openFile = async (filename: string) => {
     const res = await fetch(`${API_BASE_URL}/files/${filename}`);
     if (res.ok) {
@@ -387,6 +405,47 @@ export default function TaskPage() {
                 </div>
               )}
             </>
+          )}
+          {task?.status === 'COMPLETED' && (
+            <div style={{
+              marginTop: 24, padding: '16px 20px',
+              background: '#16161a', border: '1px solid rgba(255,255,255,0.07)',
+              borderRadius: 10, display: 'flex', alignItems: 'center', gap: 12,
+            }}>
+              <span style={{ fontSize: 13, color: '#9898a8', flex: 1 }}>
+                Was this result helpful?
+              </span>
+              {feedbackSent ? (
+                <span style={{ fontSize: 13, color: '#10b981' }}>
+                  Thanks for the feedback! {feedback === 'good' ? '👍' : '👎'}
+                </span>
+              ) : (
+                <>
+                  <button
+                    onClick={() => submitFeedback('good')}
+                    style={{
+                      background: 'rgba(16,185,129,0.08)',
+                      border: '1px solid rgba(16,185,129,0.2)',
+                      color: '#10b981', cursor: 'pointer',
+                      padding: '6px 14px', borderRadius: 8, fontSize: 13,
+                    }}
+                  >
+                    👍 Good
+                  </button>
+                  <button
+                    onClick={() => submitFeedback('bad')}
+                    style={{
+                      background: 'rgba(239,68,68,0.08)',
+                      border: '1px solid rgba(239,68,68,0.2)',
+                      color: '#ef4444', cursor: 'pointer',
+                      padding: '6px 14px', borderRadius: 8, fontSize: 13,
+                    }}
+                  >
+                    👎 Bad
+                  </button>
+                </>
+              )}
+            </div>
           )}
           {/* Files Section */}
           {taskFiles.length > 0 && (

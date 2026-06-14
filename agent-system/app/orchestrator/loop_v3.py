@@ -31,6 +31,7 @@ from app.agents.search_decider import SearchDecider
 from app.agents.confidence_memory import ConfidenceMemory
 from app.utils.cost_tracker import global_cost_tracker
 from app.agents.memory.tool_success_memory import ToolSuccessMemory
+from app.agents.memory.user_feedback_memory import UserFeedbackMemory
 from app.agents.memory.tool_failure_memory import ToolFailureMemory
 
 logger = structlog.get_logger()
@@ -113,6 +114,7 @@ async def execute_task_v3(task_id: str) -> None:
     tool_success_memory = ToolSuccessMemory()
     tool_failure_memory = ToolFailureMemory()
     search_decider = SearchDecider()
+    feedback_memory = UserFeedbackMemory()
     recovery_manager = RecoveryManager()
     agent_pref_memory = AgentPreferenceMemory()
 
@@ -222,18 +224,18 @@ async def execute_task_v3(task_id: str) -> None:
                             output_preview=output[:300],
                         )
                         session_context.append(
-{
-    "task": prev_task.user_input,
-    "status": prev_task.status,
-    "output": output[:500],
-    "files": prev_ctx.created_files if prev_ctx else [],
-    "entities": (
-        prev_ctx.context_data.get("entities", [])
-        if prev_ctx and prev_ctx.context_data
-        else []
-    )
-}
-)
+                            {
+                                "task": prev_task.user_input,
+                                "status": prev_task.status,
+                                "output": output[:500],
+                                "files": prev_ctx.created_files if prev_ctx else [],
+                                "entities": (
+                                    prev_ctx.context_data.get("entities", [])
+                                    if prev_ctx and prev_ctx.context_data
+                                    else []
+                                ),
+                            }
+                        )
 
                     context["session_history"] = session_context
                     logger.info(
@@ -317,19 +319,19 @@ async def execute_task_v3(task_id: str) -> None:
                     logger.info("preferred_agent_applied", agent=preferred_agent)
 
                 memory_keywords = [
-    "previous task",
-    "previous research",
-    "what did you find",
-    "earlier task",
-    "session history",
-    "findings from previous",
-    "top findings",
-    "findings from the research",
-    "from the research",
-    "previous findings",
-    "what were the findings",
-    "research findings",
-]
+                    "previous task",
+                    "previous research",
+                    "what did you find",
+                    "earlier task",
+                    "session history",
+                    "findings from previous",
+                    "top findings",
+                    "findings from the research",
+                    "from the research",
+                    "previous findings",
+                    "what were the findings",
+                    "research findings",
+                ]
 
                 is_memory_query = any(
                     k in task.user_input.lower() for k in memory_keywords
@@ -361,7 +363,7 @@ async def execute_task_v3(task_id: str) -> None:
                         qdrant_memory.store_memory(
                             session_id=task.session_id,
                             query=task.user_input,
-                            result=coordination_result.final_output
+                            result=coordination_result.final_output,
                         )
                     await ws_manager.emit(
                         task_id,
@@ -442,19 +444,13 @@ async def execute_task_v3(task_id: str) -> None:
                     should_search=should_search,
                     reason=search_reason,
                 )
-                
+
                 if task.session_id:
-                    memories = qdrant_memory.search_memory(
-                        task.user_input,
-                        limit=2
-                    )
+                    memories = qdrant_memory.search_memory(task.user_input, limit=2)
 
                     context["qdrant_memories"] = memories
 
-                    logger.info(
-                        "qdrant_memories_loaded",
-                        count=len(memories)
-                    )
+                    logger.info("qdrant_memories_loaded", count=len(memories))
             # ================================================================
             # PHASE 3: PLANNING
             # ================================================================
@@ -522,8 +518,7 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
 
                     if resolver.has_reference(task.user_input):
                         resolution = resolver.resolve(
-                            task.user_input,
-                            context["session_history"]
+                            task.user_input, context["session_history"]
                         )
 
                         task_description = resolution["enriched_query"]
@@ -531,12 +526,11 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
                         logger.info(
                             "reference_resolution_applied",
                             query=task.user_input,
-                            subject=resolution["resolved_subject"]
+                            subject=resolution["resolved_subject"],
                         )
                 logger.info(
-    "planner_final_input",
-    task_description=task_description[:2000]
-)
+                    "planner_final_input", task_description=task_description[:2000]
+                )
                 plan = await planner.plan(task_description)
                 global_cost_tracker.record_llm_call(
                     agent="planner",
@@ -613,16 +607,13 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
             # PHASE 4: EXECUTION
             # ================================================================
             context.update(
-    {
-        "memories": similar_memories,
-        "should_search": should_search,
-        "preferred_tools": tool_success_memory.top_tools(),
-    }
-)
-            logger.info(
-    "preferred_tools_loaded",
-    tools=context["preferred_tools"]
-)
+                {
+                    "memories": similar_memories,
+                    "should_search": should_search,
+                    "preferred_tools": tool_success_memory.top_tools(),
+                }
+            )
+            logger.info("preferred_tools_loaded", tools=context["preferred_tools"])
 
             for step_data in plan:
                 step_number = step_data["step"]
@@ -729,13 +720,16 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
                         # ── PASS ──────────────────────────────────────────
                         if evaluation.verdict == Verdict.PASS:
                             if step.tool_name:
-                                tool_success_memory.record_success(
-                                    str(step.tool_name)
-                                )
+                                tool_success_memory.record_success(str(step.tool_name))
                             task_metrics["completed_steps"] += 1
                             step.status = StepStatus.COMPLETED
                             step.completed_at = datetime.utcnow()
                             step_succeeded = True
+                            feedback_memory.record_feedback(
+                                query=task.user_input,
+                                feedback="good",
+                                answer=tool_result.output[:500],
+                            )
                             await ws_manager.emit(
                                 task_id,
                                 {
@@ -777,15 +771,17 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
                         # ── FAIL ──────────────────────────────────────────
                         else:
                             if step.tool_name:
-                                tool_success_memory.record_failure(
-                                    str(step.tool_name)
-                                )
+                                tool_success_memory.record_failure(str(step.tool_name))
                             logger.error(
                                 "orchestrator_step_failed",
                                 step_number=step_number,
                                 reason=evaluation.reason,
                             )
-
+                            feedback_memory.record_feedback(
+                                query=task.user_input,
+                                feedback="bad",
+                                answer=evaluation.reason,
+                            )
                             reflection_output = None
                             try:
                                 reflection_output = await reflection_agent.reflect(
@@ -948,7 +944,9 @@ INSTRUCTIONS FOR USING SESSION HISTORY:
             )
 
             try:
-                best_agent = context.get("preferred_agent") or context.get("recovered_by_agent")
+                best_agent = context.get("preferred_agent") or context.get(
+                    "recovered_by_agent"
+                )
 
                 if best_agent in {"researcher", "engineer", "writer"}:
                     agent_pref_memory.record_success(

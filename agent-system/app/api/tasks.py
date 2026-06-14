@@ -2,15 +2,29 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
+from app.agents.memory.user_feedback_memory import UserFeedbackMemory
 import uuid
 from datetime import datetime
 import structlog
+from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
+from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
+from app.agents.memory.tool_success_memory import ToolSuccessMemory
 from app.db.session import get_db
 from app.models.task import Task, Step, TaskStatus
 from app.orchestrator.loop_v3 import execute_task_v3 as execute_task
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+agent_performance_memory = AgentPerformanceMemory()
+agent_preference_memory = AgentPreferenceMemory()
+tool_success_memory = ToolSuccessMemory()
+feedback_memory = UserFeedbackMemory()
+
+
+class FeedbackRequest(BaseModel):
+    query: str
+    feedback: str
 
 
 class TaskCreate(BaseModel):
@@ -52,7 +66,12 @@ async def create_task(
     """Create a new task and start execution"""
     task_id = str(uuid.uuid4())
 
-    task = Task(id=task_id, user_input=task_data.prompt, status=TaskStatus.PENDING, session_id=task_data.session_id)
+    task = Task(
+        id=task_id,
+        user_input=task_data.prompt,
+        status=TaskStatus.PENDING,
+        session_id=task_data.session_id,
+    )
 
     db.add(task)
     db.commit()
@@ -235,3 +254,52 @@ async def cancel_task(task_id: str, db: Session = Depends(get_db)):
 
     logger.info("task_cancelled", task_id=task_id)
     return {"task_id": task_id, "status": "cancelled"}
+
+
+@router.post("/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    feedback_memory.record_feedback(
+        query=request.query,
+        feedback=request.feedback,
+    )
+
+    return {"success": True}
+@router.get("/feedback/stats")
+async def feedback_stats():
+    return feedback_memory.get_feedback_stats()
+
+@router.get("/memory/stats")
+async def memory_stats():
+
+    return {
+        "feedback_entries": len(
+            feedback_memory.feedback
+        ),
+
+        "agent_performance_entries": len(
+            agent_performance_memory.all()
+        ),
+
+        "agent_preference_entries": len(
+            agent_preference_memory.preferences
+        ),
+
+        "tool_success_entries": len(
+            tool_success_memory.memory
+        ),
+    }
+@router.get("/agents/performance")
+async def agent_performance():
+    return agent_performance_memory.all()
+
+@router.get("/tools/performance")
+async def tool_performance():
+    return tool_success_memory.memory
+
+@router.get("/agents/preferences")
+async def agent_preferences():
+    return agent_preference_memory.preferences
+
+@router.get("/feedback/history")
+async def feedback_history():
+    return feedback_memory.feedback[-50:]

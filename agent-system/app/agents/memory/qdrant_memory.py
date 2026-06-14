@@ -21,19 +21,14 @@ class QdrantMemory:
             port=6333,
         )
 
-        self.embedding_model = SentenceTransformer(
-            "all-MiniLM-L6-v2"
-        )
+        self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
         self._ensure_collection()
 
     def _ensure_collection(self):
         collections = self.client.get_collections()
 
-        existing = [
-            c.name
-            for c in collections.collections
-        ]
+        existing = [c.name for c in collections.collections]
 
         if self.COLLECTION_NAME not in existing:
             self.client.create_collection(
@@ -58,9 +53,7 @@ Result:
 {result}
 """
 
-        vector = self.embedding_model.encode(
-            text
-        ).tolist()
+        vector = self.embedding_model.encode(text).tolist()
 
         self.client.upsert(
             collection_name=self.COLLECTION_NAME,
@@ -78,15 +71,9 @@ Result:
             ],
         )
 
-    def search_memory(
-    self,
-    query: str,
-    limit: int = 5
-) -> list[dict]:
+    def search_memory(self, query: str, limit: int = 5) -> list[dict]:
 
-        vector = self.embedding_model.encode(
-            query
-        ).tolist()
+        vector = self.embedding_model.encode(query).tolist()
 
         results = self.client.query_points(
             collection_name=self.COLLECTION_NAME,
@@ -105,53 +92,50 @@ Result:
 
             payload = dict(r.payload)
 
-            similarity_score = float(
-                getattr(r, "score", 0.0)
-            )
+            similarity_score = float(getattr(r, "score", 0.0))
 
             recency_score = 0.0
 
             try:
-                created_at = payload.get(
-                    "created_at"
-                )
+                created_at = payload.get("created_at")
 
                 if created_at:
-                    age_days = (
-                        now -
-                        datetime.fromisoformat(
-                            created_at
-                        )
-                    ).days
+                    age_days = (now - datetime.fromisoformat(created_at)).days
 
-                    recency_score = max(
-                        0,
-                        1 - (age_days / 30)
-                    )
+                    recency_score = max(0, 1 - (age_days / 30))
 
             except Exception:
                 pass
 
-            final_score = (
-                similarity_score * 0.8
-                +
-                recency_score * 0.2
-            )
+            final_score = similarity_score * 0.8 + recency_score * 0.2
 
             payload["_score"] = final_score
 
             ranked.append(payload)
 
-        ranked.sort(
-            key=lambda x: x["_score"],
-            reverse=True
-        )
+        ranked.sort(key=lambda x: x["_score"], reverse=True)
 
         return ranked[:limit]
-    
-    def summarize_old_memories(self):
-        """
-        Future feature.
-        Summarize memories when count > 50.
-        """
-        pass
+
+    def summarize_old_memories(self, limit: int = 50) -> str:
+
+        points = self.client.scroll(
+            collection_name=self.COLLECTION_NAME,
+            limit=limit,
+            with_payload=True,
+        )[0]
+
+        if not points:
+            return "No memories found."
+
+        summaries = []
+
+        for p in points[:20]:
+
+            payload = p.payload or {}
+
+            query = payload.get("query", "")[:100]
+
+            summaries.append(f"- {query}")
+
+        return "\n".join(summaries)

@@ -262,6 +262,16 @@ export default function Home() {
           >
             Analytics
           </button>
+          <button
+            onClick={() => router.push('/files')}
+            style={{
+              background: 'none', border: '1px solid rgba(255,255,255,0.1)',
+              color: '#9898a8', cursor: 'pointer', fontSize: 12,
+              padding: '4px 12px', borderRadius: 6, marginLeft: 8,
+            }}
+          >
+            Files
+          </button>
           <span className="topbar-badge">Autonomous</span>
         </header>
 
