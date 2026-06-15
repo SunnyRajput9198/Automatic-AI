@@ -4,12 +4,9 @@ import time
 from typing import Dict, Any, Optional
 from app.utils.json_parser import extract_json
 from app.agents.base_agent import BaseAgent, AgentResult
-from app.utils.llm import call_llm, call_llm_with_system
+from app.utils.llm import call_llm_with_system
 
 logger = structlog.get_logger()
-from dotenv import load_dotenv
-
-load_dotenv()
 
 
 class WriterAgent(BaseAgent):
@@ -143,14 +140,12 @@ RESPOND ONLY WITH JSON."""
         Returns:
             Dict with content, title, metadata
         """
-        # Build context string
         context_str = ""
         if context:
-            # Check for researcher output
             if "researcher_output" in context:
                 context_str = f"\n\nRESEARCH FINDINGS:\n{context['researcher_output']}"
             else:
-                context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2)}"
+                context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2, default=str)}"
 
         user_prompt = f"""WRITING TASK:
 {task}
@@ -161,16 +156,20 @@ Return JSON only."""
 
         try:
             response = await call_llm_with_system(
-    system_prompt=self.SYSTEM_PROMPT,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.7,
-)
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.7,
+            )
 
-            # Parse response
             content_data = extract_json(response, context="writer")
             if not content_data:
-                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
+                logger.error(
+                    "writer_json_error",
+                    error="No valid JSON found",
+                    response_preview=(response or "")[:200],
+                )
+                return None
 
             logger.debug(
                 "writer_content_generated",

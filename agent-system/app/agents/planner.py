@@ -1,17 +1,9 @@
-import json
 import structlog
 from typing import List, Dict
-from pydantic import BaseModel
 from app.utils.json_parser import extract_json
 from app.utils.llm import call_groq_with_system
 
 logger = structlog.get_logger()
-
-
-class PlanStep(BaseModel):
-    step: int
-    instruction: str
-    reasoning: str
 
 
 class PlannerAgent:
@@ -122,11 +114,13 @@ GOOD EXAMPLES:
 ✅ "Use file_write to save results to output.txt"
 ✅ "Extract findings from SESSION HISTORY and answer the user's question"
 ✅ "Summarize key results contained in SESSION HISTORY"
+
 DEFAULT INTERPRETATION:
 - "search" = web_search (unless clearly about files)
 - "find" = web_search (unless clearly about files)
 - "what is" = web_search
 - "look up" = web_search
+
 COMPARISON QUERIES (important):
 - "what is X and how different from Y" → ONE step: web_search for "X vs Y"
 - "compare X and Y" → ONE step: web_search for "X Y comparison"
@@ -140,6 +134,7 @@ MULTI-TOPIC QUERIES:
 - Keep plans to 2 steps maximum for simple research tasks:
     Step 1: web_search
     Step 2: file_write (optional)
+
 SESSION HISTORY contains summaries of previous tasks.
 
 IMPORTANT:
@@ -165,64 +160,18 @@ If the user asks:
 - "summarize findings from previous task"
 - "what were the findings"
 
-Then use the SESSION HISTORY already provided.
+Then use the SESSION HISTORY already provided in the task description.
 
-Do NOT repeat or dump SESSION HISTORY.
-
-Instead:
+Do NOT repeat or dump SESSION HISTORY. Instead:
 - Extract relevant facts
-GOOD:
-Step 1: Extract the relevant information from SESSION HISTORY and answer the user's question
-
-GOOD:
-Step 1: Summarize the findings contained in SESSION HISTORY
-
-GOOD:
-Step 1: Identify the key results in SESSION HISTORY and present them clearly
-
-GOOD:
-Step 1: Answer the user's question using information from SESSION HISTORY, not by repeating it
 - Summarize findings
 - Answer the user's question
 - Format results clearly (bullet points when appropriate)
-CRITICAL:
-MEMORY QUERIES MUST PRODUCE EXACTLY ONE STEP.
 
-For any request about:
-- previous task
-- previous findings
-- previous research
-- session history
-- conclusions
-- summaries
+CRITICAL: MEMORY QUERIES MUST PRODUCE EXACTLY ONE STEP.
 
+For any request about previous task / findings / research / session history / conclusions / summaries:
 Return exactly ONE step that directly answers the question.
-
-Do NOT create:
-- extraction steps
-- retrieval steps
-- formatting steps
-- python_executor steps
-
-BAD:
-Step 1: Extract findings
-Step 2: Format findings
-
-GOOD:
-Step 1: Answer the user's question using SESSION HISTORY
-If SESSION HISTORY is available:
-- Never return raw SESSION HISTORY.
-- Never copy SESSION HISTORY verbatim.
-- Extract information and answer the user's question.
-- For requests about findings, results, conclusions, or summaries:
-    return concise bullet points.
-
-- Create EXACTLY ONE step.
-- Use a single step.
-- Extract relevant information within that step.
-- Do not create multiple extraction/retrieval steps.
-- Do not create parsing steps.
-- Do not create intermediate reasoning steps.
 
 GOOD:
 Step 1: Answer the user's question using information from SESSION HISTORY.
@@ -230,68 +179,52 @@ Step 1: Answer the user's question using information from SESSION HISTORY.
 GOOD:
 Step 1: Summarize the key findings contained in SESSION HISTORY.
 
-GOOD:
-Step 1: Extract the top findings from SESSION HISTORY and present them as bullet points.
-
 BAD:
-Step 1: Repeat SESSION HISTORY verbatim.
+Step 1: Extract findings
+Step 2: Format findings
 
-BAD:
-Step 1: Dump raw SESSION HISTORY.
-
-BAD:
-Step 1: Retrieve SESSION HISTORY.
-
-
-These multi-step extraction plans are forbidden.
-Example:
-
-User:
-"what was the previous task"
-
-GOOD:
-Step 1: Summarize the previous task information using facts from SESSION HISTORY
-
-BAD:
-Step 1: Use SESSION HISTORY to retrieve previous task
-Step 1: Read session_history.json
-Step 1: Use file_read on previous_task.txt
 FILE NAMING RULES:
 - Always use .txt extension for saving research results
 - Never use .pdf, .docx, .xlsx — file_write only supports plain text
 - Good: results.txt, research.txt, summary.txt
 - Bad: results.pdf, paper.docx
+
 REPLAN RULES (when a step failed):
 - Never repeat the exact same approach that failed
 - If python_executor failed → try file_write to save code instead
 - If web_search failed → try web_fetch with a direct URL
 - If file_read failed → try file_list first to verify file exists
 - Always address the specific error in your new plan
+
 RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
 """
-    REPLAN_SYSTEM_PROMPT = SYSTEM_PROMPT + """
 
-REPLAN RULES (when a step failed):
-- Never repeat the exact same approach that failed
-- If python_executor failed → try file_write to save code instead
-- If web_search failed → try web_fetch with a direct URL
-- If file_read failed → try file_list first to verify file exists
-- Always address the specific error in your new plan
-FILE NAMING RULES:
-- Always use .txt extension for saving research results
-- Never use .pdf, .docx, .xlsx — file_write only supports plain text
-- Good: results.txt, research.txt, summary.txt
-- Bad: results.pdf, paper.docx
-"""
+    # REPLAN_SYSTEM_PROMPT is identical to SYSTEM_PROMPT — the base prompt
+    # already contains all replan rules. No need to duplicate them.
+    REPLAN_SYSTEM_PROMPT = SYSTEM_PROMPT
 
     def __init__(self, model: str = "llama-3.1-8b-instant"):
         self.model = model
 
-    async def plan(self, user_task: str) -> List[Dict]:
-        """
-        Convert user task into executable steps
-        """
+    def _validate_steps(self, steps: list, log_key: str) -> List[Dict]:
+        """Validate and normalize raw step dicts from the LLM."""
+        validated: List[Dict] = []
+        for idx, step in enumerate(steps, start=1):
+            instruction = step.get("instruction")
+            if not instruction:
+                logger.warning(f"{log_key}_invalid_step", step=step)
+                continue
+            validated.append(
+                {
+                    "step": step.get("step", idx),
+                    "instruction": instruction,
+                    "reasoning": step.get("reasoning", ""),
+                }
+            )
+        return validated
 
+    async def plan(self, user_task: str) -> List[Dict]:
+        """Convert user task into executable steps."""
         logger.info("planner_starting", task=user_task)
 
         user_prompt = f"""USER TASK:
@@ -300,7 +233,6 @@ FILE NAMING RULES:
 Break this down into concrete, executable steps.
 Return JSON only.
 """
-        response = ""
         try:
             response = await call_groq_with_system(
                 system_prompt=self.SYSTEM_PROMPT,
@@ -309,43 +241,22 @@ Return JSON only.
                 temperature=0.1,
             )
 
-            # ---- ROBUST JSON EXTRACTION ----
             plan_data = extract_json(response, context="planner")
             if not plan_data:
-                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
+                logger.error("planner_json_error", error="No valid JSON found", response=response[:500])
+                raise ValueError("Failed to parse plan JSON: No valid JSON found")
+
             steps = plan_data.get("steps", [])[:10]  # enforce max 10 steps
-
-            logger.info("planner_completed", num_steps=len(steps))
-
-            validated_steps: List[Dict] = []
-
-            for idx, step in enumerate(steps, start=1):
-                instruction = step.get("instruction")
-                if not instruction:
-                    logger.warning("planner_invalid_step", step=step)
-                    continue
-
-                validated_steps.append(
-                    {
-                        "step": step.get("step", idx),
-                        "instruction": instruction,
-                        "reasoning": step.get("reasoning", ""),
-                    }
-                )
+            validated_steps = self._validate_steps(steps, "planner")
 
             if not validated_steps:
                 raise ValueError("No valid executable steps generated")
 
+            logger.info("planner_completed", num_steps=len(validated_steps))
             return validated_steps
 
-        except json.JSONDecodeError as e:
-            logger.error(
-                "planner_json_error",
-                error=str(e),
-                response=response,
-            )
-            raise ValueError(f"Failed to parse plan JSON: {str(e)}")
-
+        except ValueError:
+            raise
         except Exception as e:
             logger.error("planner_error", error=str(e))
             raise
@@ -353,10 +264,7 @@ Return JSON only.
     async def replan(
         self, original_task: str, failed_step: str, error: str
     ) -> List[Dict]:
-        """
-        Create a new plan when a step fails
-        """
-
+        """Create a new plan when a step fails."""
         logger.info("planner_replanning", failed_step=failed_step)
 
         user_prompt = f"""ORIGINAL TASK:
@@ -382,21 +290,11 @@ Return JSON only.
 
             plan_data = extract_json(response, context="replanner")
             if not plan_data:
-                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
+                logger.error("planner_replan_json_error", error="No valid JSON found", response=response[:500])
+                raise ValueError("Failed to parse replan JSON: No valid JSON found")
+
             steps = plan_data.get("steps", [])[:10]  # enforce max 10 steps
-            validated_steps: List[Dict] = []
-            for idx, step in enumerate(steps, start=1):
-                instruction = step.get("instruction")
-                if not instruction:
-                    logger.warning("planner_replan_invalid_step", step=step)
-                    continue
-                validated_steps.append(
-                    {
-                        "step": step.get("step", idx),
-                        "instruction": instruction,
-                        "reasoning": step.get("reasoning", ""),
-                    }
-                )
+            validated_steps = self._validate_steps(steps, "planner_replan")
 
             if not validated_steps:
                 raise ValueError("Replan produced no valid steps")
@@ -404,6 +302,8 @@ Return JSON only.
             logger.info("planner_replan_completed", num_steps=len(validated_steps))
             return validated_steps
 
+        except ValueError:
+            raise
         except Exception as e:
             logger.error("planner_replan_error", error=str(e))
             raise

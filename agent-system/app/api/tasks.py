@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from app.agents.memory.user_feedback_memory import UserFeedbackMemory
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import structlog
 from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
 from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
@@ -244,7 +244,7 @@ async def cancel_task(task_id: str, db: Session = Depends(get_db)):
     # Update DB
     task.status = TaskStatus.FAILED
     task.error_message = "Cancelled by user"
-    task.completed_at = datetime.utcnow()
+    task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
 
     # Notify WebSocket

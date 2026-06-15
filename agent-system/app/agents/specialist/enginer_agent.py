@@ -4,10 +4,9 @@ import time
 from typing import Dict, Any, Optional
 
 from app.agents.base_agent import BaseAgent, AgentResult
-from app.utils.llm import call_llm, call_llm_with_system
-from dotenv import load_dotenv
+from app.utils.llm import call_llm_with_system
+from app.utils.json_parser import extract_json
 
-load_dotenv()
 logger = structlog.get_logger()
 
 
@@ -107,16 +106,14 @@ RESPOND ONLY WITH JSON."""
                 reasoning=reasoning,
             )
 
-            # Execute the tool
-            # Note: In real implementation, import and execute actual tools
-            # For now, return a structured success
-
-            output = f"ENGINEERING EXECUTION\n"
-            output += f"Approach: {approach}\n"
-            output += f"Tool: {tool_name}\n"
-            output += f"Reasoning: {reasoning}\n\n"
-            output += f"[Tool execution would happen here with real tools]\n"
-            output += f"Inputs: {json.dumps(tool_inputs, indent=2)}"
+            # TODO: wire up actual tool execution via ExecutorAgent
+            output = (
+                f"ENGINEERING EXECUTION\n"
+                f"Approach: {approach}\n"
+                f"Tool: {tool_name}\n"
+                f"Reasoning: {reasoning}\n\n"
+                f"Inputs: {json.dumps(tool_inputs, indent=2, default=str)}"
+            )
 
             duration = time.time() - start_time
 
@@ -161,7 +158,7 @@ RESPOND ONLY WITH JSON."""
         """
         context_str = ""
         if context:
-            context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2)}"
+            context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2, default=str)}"
 
         user_prompt = f"""ENGINEERING TASK:
 {task}
@@ -172,34 +169,19 @@ Return JSON only."""
 
         try:
             response = await call_llm_with_system(
-    system_prompt=self.SYSTEM_PROMPT,
-    user_prompt=user_prompt,
-    model=self.model,
-    temperature=0.1,
-)
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                model=self.model,
+                temperature=0.1,
+            )
 
-            # Parse response
-            response_text = (response or "").strip()
-
-            # Handle markdown code blocks
-            if response_text.startswith("```"):
-                response_text = (
-                    response_text.split("\n", 1)[1]
-                    if "\n" in response_text
-                    else response_text[3:]
+            decision = extract_json(response, context="engineer")
+            if not decision:
+                logger.error(
+                    "engineer_decision_json_error",
+                    response_preview=(response or "")[:200],
                 )
-                if response_text.endswith("```"):
-                    response_text = response_text[:-3]
-                response_text = response_text.strip()
-
-            # Extract JSON
-            start = response_text.find("{")
-            end = response_text.rfind("}")
-
-            if start != -1 and end != -1:
-                response_text = response_text[start : end + 1]
-
-            decision = json.loads(response_text)
+                return None
 
             logger.debug(
                 "engineer_decision",

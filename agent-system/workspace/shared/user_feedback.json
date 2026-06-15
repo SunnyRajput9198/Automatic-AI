@@ -10,5 +10,23 @@
     "feedback": "good",
     "answer": "",
     "created_at": "2026-06-14T08:05:49.277649"
+  },
+  {
+    "query": "What is FastAPI?",
+    "feedback": "good",
+    "answer": "1. Wikipedia — FastAPI\n   FastAPI is a web framework for building HTTP-based service APIs in Python 3.8+. It uses Pydantic and type hints to validate, serialize and deserialize data. FastAPI also automatically generates OpenAPI documentation for APIs built with it. It was first released in 2018.\n   URL: https://en.wikipedia.org/wiki/FastAPI\n\n2. ArXiv — Scalable and Secure AI Inference in Healthcare: A Comparative Benchmarking of FastAPI and Triton Inference Server on Kubernetes\n   Efficient and ",
+    "created_at": "2026-06-15T09:33:37.464729+00:00"
+  },
+  {
+    "query": "test",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-15T10:07:43.254914+00:00"
+  },
+  {
+    "query": "what is AI\n",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-15T10:10:59.466550+00:00"
   }
 ]

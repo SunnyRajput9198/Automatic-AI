@@ -2,8 +2,8 @@
 
 import json
 import os
-from datetime import datetime
-from typing import List, Dict
+from datetime import datetime, timezone
+from typing import List, Dict, Optional
 
 import structlog
 
@@ -56,7 +56,7 @@ class UserFeedbackMemory:
         self,
         query: str,
         feedback: str,
-        answer: str | None = None,
+        answer: Optional[str] = None,
     ):
         """
         feedback:
@@ -69,7 +69,7 @@ class UserFeedbackMemory:
             "query": query,
             "feedback": feedback.lower().strip(),
             "answer": answer or "",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
         self.feedback.append(item)

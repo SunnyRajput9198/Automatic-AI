@@ -24,10 +24,14 @@ class ToolSuccessMemory:
         self._load()
 
     def _load(self):
-        if os.path.exists(MEMORY_PATH):
-            with open(MEMORY_PATH, "r") as f:
-                self.memory = json.load(f)
-        else:
+        try:
+            if os.path.exists(MEMORY_PATH):
+                with open(MEMORY_PATH, "r") as f:
+                    self.memory = json.load(f)
+            else:
+                self.memory = {}
+        except Exception as e:
+            logger.error("tool_success_memory_corrupted", error=str(e))
             self.memory = {}
 
     def save(self):

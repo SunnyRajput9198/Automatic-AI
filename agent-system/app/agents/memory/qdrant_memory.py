@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -8,7 +8,6 @@ from qdrant_client.models import (
 )
 
 from sentence_transformers import SentenceTransformer
-from sympy import limit
 
 
 class QdrantMemory:
@@ -65,7 +64,7 @@ Result:
                         "session_id": session_id,
                         "query": query,
                         "result": result,
-                        "created_at": datetime.utcnow().isoformat(),
+                        "created_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
             ],
@@ -83,7 +82,7 @@ Result:
 
         ranked = []
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         for r in results:
 
@@ -100,8 +99,11 @@ Result:
                 created_at = payload.get("created_at")
 
                 if created_at:
-                    age_days = (now - datetime.fromisoformat(created_at)).days
-
+                    dt = datetime.fromisoformat(created_at)
+                    # Ensure tz-aware for subtraction
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    age_days = (now - dt).days
                     recency_score = max(0, 1 - (age_days / 30))
 
             except Exception:

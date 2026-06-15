@@ -1,10 +1,7 @@
 import json
-import uuid
 import structlog
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
-from datetime import datetime
-from sqlalchemy.orm import Session
 from app.utils.json_parser import extract_json
 
 from app.utils.llm import call_groq_with_system
@@ -16,14 +13,15 @@ logger = structlog.get_logger()
 class Reflection(BaseModel):
     """Structured reflection output"""
 
-    what_worked: List[str]  # Successful strategies
-    what_failed: List[str]  # Failures and mistakes
-    root_causes: List[str]  # Why failures happened
-    lessons: List[str]  # Key takeaways
+    what_worked: List[str]          # Successful strategies
+    what_failed: List[str]          # Failures and mistakes
+    root_causes: List[str]          # Why failures happened
+    lessons: List[str]              # Key takeaways
     confidence_updates: Dict[str, float]  # Pattern -> confidence change
-    improvement_suggestions: List[str]  # How to do better next time
-    pattern_quality: float  # How reusable is this pattern (0-1)
-    suggested_action: Optional[str] = None  # ← borrow this idea
+    improvement_suggestions: List[str]    # How to do better next time
+    pattern_quality: float          # How reusable is this pattern (0-1)
+    suggested_action: Optional[str] = None  # Optional next action recommendation
+
 
 class ReflectionAgent:
     """
@@ -31,7 +29,7 @@ class ReflectionAgent:
 
     RUNS AFTER: Task completion (success or failure)
     PURPOSE: Extract lessons and improve future performance
-    MODEL: Claude Haiku (analysis + learning)
+    MODEL: Groq (analysis + learning)
     """
 
     SYSTEM_PROMPT = """You are a reflection and learning agent. Your job is to analyze completed tasks and extract actionable lessons.
@@ -87,7 +85,8 @@ RESPONSE FORMAT (JSON only):
     "another_pattern": -0.1
   },
   "improvement_suggestions": ["suggestion1", "suggestion2"],
-  "pattern_quality": 0.85
+  "pattern_quality": 0.85,
+  "suggested_action": "optional next action recommendation"
 }
 
 EXAMPLES:
@@ -110,7 +109,8 @@ Successful file creation task:
   "improvement_suggestions": [
     "Could skip existence check for 'create' tasks"
   ],
-  "pattern_quality": 0.95
+  "pattern_quality": 0.95,
+  "suggested_action": null
 }
 
 Failed calculation with retries:
@@ -139,9 +139,10 @@ Failed calculation with retries:
     "Add recursion limit checks in planning",
     "Critic should suggest iterative approach after recursion error"
   ],
-  "pattern_quality": 0.6
+  "pattern_quality": 0.6,
+  "suggested_action": null
 }
-"suggested_action": "optional next action recommendation"
+
 RESPOND ONLY WITH JSON."""
 
     def __init__(self, model: str = "llama-3.3-70b-versatile"):
@@ -213,7 +214,6 @@ Reflect on this task execution:
 
 Be specific and actionable. Return JSON only."""
 
-        response_text = ""
         try:
             response = await call_groq_with_system(
                 system_prompt=self.SYSTEM_PROMPT,
@@ -222,22 +222,24 @@ Be specific and actionable. Return JSON only."""
                 temperature=0.3,
             )
 
-            # Parse response
             reflection_data = extract_json(response, context="reflection")
             if not reflection_data:
-                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
+                logger.error(
+                    "reflection_json_error",
+                    error="No valid JSON found",
+                    response=response[:500],
+                )
+                return _empty_reflection("Reflection analysis failed", "JSON parsing error")
 
-            # Create reflection object
             reflection = Reflection(
                 what_worked=reflection_data.get("what_worked", []),
                 what_failed=reflection_data.get("what_failed", []),
                 root_causes=reflection_data.get("root_causes", []),
                 lessons=reflection_data.get("lessons", []),
                 confidence_updates=reflection_data.get("confidence_updates", {}),
-                improvement_suggestions=reflection_data.get(
-                    "improvement_suggestions", []
-                ),
+                improvement_suggestions=reflection_data.get("improvement_suggestions", []),
                 pattern_quality=float(reflection_data.get("pattern_quality", 0.5)),
+                suggested_action=reflection_data.get("suggested_action"),
             )
 
             logger.info(
@@ -249,30 +251,19 @@ Be specific and actionable. Return JSON only."""
 
             return reflection
 
-        except json.JSONDecodeError as e:
-            logger.error(
-                "reflection_json_error", error=str(e), response=response_text[:500]
-            )
-            # Return empty reflection
-            return Reflection(
-                what_worked=[],
-                what_failed=["Reflection analysis failed"],
-                root_causes=["JSON parsing error"],
-                lessons=[],
-                confidence_updates={},
-                improvement_suggestions=[],
-                pattern_quality=0.0,
-            )
-
         except Exception as e:
             logger.error("reflection_error", error=str(e))
-            # Return empty reflection
-            return Reflection(
-                what_worked=[],
-                what_failed=["Reflection error"],
-                root_causes=[str(e)],
-                lessons=[],
-                confidence_updates={},
-                improvement_suggestions=[],
-                pattern_quality=0.0,
-            )
+            return _empty_reflection("Reflection error", str(e))
+
+
+def _empty_reflection(failed_reason: str, root_cause: str) -> Reflection:
+    """Return a safe empty reflection when analysis fails."""
+    return Reflection(
+        what_worked=[],
+        what_failed=[failed_reason],
+        root_causes=[root_cause],
+        lessons=[],
+        confidence_updates={},
+        improvement_suggestions=[],
+        pattern_quality=0.0,
+    )

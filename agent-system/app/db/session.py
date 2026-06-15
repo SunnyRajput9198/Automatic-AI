@@ -19,6 +19,12 @@ SessionLocal = sessionmaker(
 
 
 def get_db() -> Generator[Session, None, None]:
+    """
+    Plain generator for FastAPI Depends() injection.
+    Usage: db: Session = Depends(get_db)
+
+    Must NOT have @contextmanager — FastAPI drives the generator itself.
+    """
     db = SessionLocal()
     try:
         yield db
@@ -27,7 +33,13 @@ def get_db() -> Generator[Session, None, None]:
 
 
 @contextmanager
-def get_db_context():
+def get_db_context() -> Generator[Session, None, None]:
+    """
+    Context manager for manual usage (background tasks, scripts, loop_v3).
+    Usage: with get_db_context() as db: ...
+
+    Auto-commits on success, rolls back on exception.
+    """
     db = SessionLocal()
     try:
         yield db
@@ -40,8 +52,10 @@ def get_db_context():
 
 
 def init_db():
-    from app.models.task import Base as TaskBase
-    from app.models.memory import Base as MemoryBase
+    """Create all tables using the unified Base metadata."""
+    from app.db.base import Base
+    # Import all models so their metadata is registered on Base
+    import app.models.task    # noqa: F401
+    import app.models.memory  # noqa: F401
 
-    TaskBase.metadata.create_all(bind=engine)
-    MemoryBase.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)

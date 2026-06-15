@@ -1,12 +1,10 @@
+import re
 import structlog
 import time
 from typing import Dict, Any, Optional
-import xml.etree.ElementTree as ET
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.tools.web_search import WebSearchTool, WebFetchTool
-from dotenv import load_dotenv
 
-load_dotenv()
 logger = structlog.get_logger()
 
 
@@ -119,10 +117,8 @@ class ResearcherAgent(BaseAgent):
         Extract search query from task description.
 
         Removes common action words to get core query.
+        Preserves original casing for proper nouns.
         """
-        # Remove common action words
-        query = task.lower()
-
         action_words = [
             "search for",
             "research",
@@ -134,11 +130,10 @@ class ResearcherAgent(BaseAgent):
             "learn about",
         ]
 
+        query = task
         for word in action_words:
-            query = query.replace(word, "")
-
-        # Clean up
-        query = query.strip()
+            # Case-insensitive removal while preserving the rest of the casing
+            query = re.sub(re.escape(word), "", query, flags=re.IGNORECASE).strip()
 
         # If query is too short, use original task
         if len(query) < 5:

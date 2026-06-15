@@ -2,12 +2,12 @@ import json
 import uuid
 import structlog
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from app.utils.json_parser import extract_json
 
-from app.utils.llm import call_llm, call_llm_with_system
+from app.utils.llm import call_llm_with_system
 from app.models.memory import Memory
 from app.agents.reflection import Reflection
 
@@ -161,7 +161,7 @@ class ConfidenceMemory:
         FIX: The previous version used datetime.now(timezone.utc) (tz-aware)
         while SQLAlchemy DateTime columns without timezone=True store naive
         datetimes.  Subtracting aware from naive raises TypeError at runtime.
-        Both sides now use naive UTC via datetime.utcnow().
+        Both sides now use naive UTC via datetime.now(timezone.utc).replace(tzinfo=None).
         """
         if memory.last_used is None and memory.created_at is None:
             return 0.5
@@ -172,7 +172,9 @@ class ConfidenceMemory:
         if last_time.tzinfo is not None:
             last_time = last_time.replace(tzinfo=None)
 
-        now = datetime.utcnow()  # naive UTC — matches SQLAlchemy DateTime default
+        now = datetime.now(timezone.utc).replace(
+            tzinfo=None
+        )  # naive UTC — matches SQLAlchemy DateTime default
         days_old = max(0, (now - last_time).days)
 
         return max(0.1, 1.0 / (1.0 + days_old / 30.0))
@@ -198,7 +200,7 @@ class ConfidenceMemory:
         4. Update usage counters in a single batched DB query
 
         FIX: Previously ran one db.query() per LLM-selected ID (N+1 queries).
-             Now batches all updates with a single IN filter.
+            Now batches all updates with a single IN filter.
         """
         logger.info("confidence_recall_starting", task=task_description)
 
@@ -225,7 +227,9 @@ class ConfidenceMemory:
         scored_memories: List[Dict] = []
         for mem in candidate_memories:
             # FIX: explicit float() cast — DB drivers may return Decimal
-            confidence = float(mem.success_rate) if mem.success_rate is not None else 0.0
+            confidence = (
+                float(mem.success_rate) if mem.success_rate is not None else 0.0
+            )
             recency = self.calculate_recency_score(mem)
             usage = float(mem.times_referenced or 0)
 
@@ -258,15 +262,24 @@ class ConfidenceMemory:
 
         try:
             response = await call_llm_with_system(
-    system_prompt="",
-    user_prompt=prompt,
-    model=self.model,
-    temperature=0.1,
-)
+                system_prompt=(
+                    "You are a memory retrieval assistant. "
+                    "Select the most relevant past patterns for the current task. "
+                    "Return JSON only."
+                ),
+                user_prompt=prompt,
+                model=self.model,
+                temperature=0.1,
+            )
 
             result = extract_json(response, context="confidence_memory")
             if not result:
-                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
+                logger.error(
+                    "confidence_recall_json_error",
+                    error="No valid JSON found",
+                    response=response[:500],
+                )
+                raise ValueError("Failed to parse memory recall JSON")
             relevant_ids: List[str] = result.get("relevant_ids", [])[:limit]
 
             # Build the return list from the already-scored data (no extra DB round-trip)
@@ -280,11 +293,9 @@ class ConfidenceMemory:
             # one db.query() per ID (was N+1 queries).
             if relevant_ids:
                 matched_objs = (
-                    self.db.query(Memory)
-                    .filter(Memory.id.in_(relevant_ids))
-                    .all()
+                    self.db.query(Memory).filter(Memory.id.in_(relevant_ids)).all()
                 )
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
                 for mem_obj in matched_objs:
                     mem_obj.times_referenced = int(mem_obj.times_referenced or 0) + 1
                     mem_obj.last_used = now
@@ -303,21 +314,19 @@ class ConfidenceMemory:
         except Exception as e:
             logger.error("confidence_recall_error", error=str(e))
             fallback = scored_memories[:limit]
-            
+
             # update usage counters even on fallback
             fallback_ids = [m["id"] for m in fallback]
             if fallback_ids:
                 matched_objs = (
-                    self.db.query(Memory)
-                    .filter(Memory.id.in_(fallback_ids))
-                    .all()
+                    self.db.query(Memory).filter(Memory.id.in_(fallback_ids)).all()
                 )
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
                 for mem_obj in matched_objs:
                     mem_obj.times_referenced = int(mem_obj.times_referenced or 0) + 1
                     mem_obj.last_used = now
                 self.db.commit()
-            
+
             avg_conf = (
                 sum(m["confidence"] for m in fallback) / len(fallback)
                 if fallback

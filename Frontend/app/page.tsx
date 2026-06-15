@@ -252,26 +252,25 @@ export default function Home() {
             <div className="logo-icon">⚡</div>
             Agent
           </div>
-          <button
-            onClick={() => router.push('/analytics')}
-            style={{
-              marginLeft: 'auto', background: 'none', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#9898a8', cursor: 'pointer', fontSize: 12, padding: '4px 12px',
-              borderRadius: 6,
-            }}
-          >
-            Analytics
-          </button>
-          <button
-            onClick={() => router.push('/files')}
-            style={{
-              background: 'none', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#9898a8', cursor: 'pointer', fontSize: 12,
-              padding: '4px 12px', borderRadius: 6, marginLeft: 8,
-            }}
-          >
-            Files
-          </button>
+          <nav style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto' }}>
+            {[
+              { label: 'Analytics', path: '/analytics' },
+              { label: 'Files', path: '/files' },
+              { label: 'Memory', path: '/memory' },
+            ].map(({ label, path }) => (
+              <button
+                key={path}
+                onClick={() => router.push(path)}
+                style={{
+                  background: 'none', border: 'none',
+                  color: '#9898a8', cursor: 'pointer',
+                  fontSize: 13, padding: '4px 12px', borderRadius: 6,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
           <span className="topbar-badge">Autonomous</span>
         </header>
 

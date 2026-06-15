@@ -1,5 +1,5 @@
 import structlog
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from app.agents.reasoner import ReasoningOutput
 
 logger = structlog.get_logger()
@@ -30,16 +30,13 @@ class SearchDecider:
         "format", "convert", "sort", "filter"
     ]
     
-    def __init__(self):
-        pass
-    
     def should_search(
         self,
         task_description: str,
         reasoning: ReasoningOutput,
         memory_confidence: Optional[float] = None,
         similar_memories: Optional[List[Dict]] = None
-    ) -> tuple[bool, str]:
+    ) -> Tuple[bool, str]:
         """
         Decide if web search is needed.
         
@@ -62,7 +59,7 @@ class SearchDecider:
                 reason="Reasoner determined search is needed"
             )
             return True, "Reasoner determined search is needed"
-        # Rule 1.5: No-search indicators override search indicators
+        # Rule 2: No-search indicators override search indicators
         for indicator in self.NO_SEARCH_INDICATORS:
             if indicator in task_lower:
                 logger.info(
@@ -70,8 +67,9 @@ class SearchDecider:
                     decision=False,
                     indicator=indicator
                 )
-            return False, f"Task is internal operation: '{indicator}'"
-        # Rule 2: Strong search indicators in task
+                return False, f"Task is internal operation: '{indicator}'"
+
+        # Rule 3: Strong search indicators in task
         for indicator in self.SEARCH_INDICATORS:
             if indicator in task_lower:
                 logger.info(

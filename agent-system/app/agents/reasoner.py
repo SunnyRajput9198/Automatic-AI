@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 from app.utils.json_parser import extract_json
-from app.utils.llm import call_llm, call_llm_with_system
+from app.utils.llm import call_llm_with_system
 
 logger = structlog.get_logger()
 
@@ -157,11 +157,6 @@ RESPOND ONLY WITH JSON."""
             "Return JSON only."
         )
 
-        # FIX: initialise response_text before the try block so the
-        # json.JSONDecodeError handler can safely reference it even when
-        # call_llm() raises before response_text is ever assigned.
-        response_text = ""
-
         try:
             response = await call_llm_with_system(
                 system_prompt=self.SYSTEM_PROMPT,
@@ -172,7 +167,12 @@ RESPOND ONLY WITH JSON."""
 
             reasoning_data = extract_json(response, context="reasoner")
             if not reasoning_data:
-                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
+                logger.error(
+                    "reasoner_json_error",
+                    error="No valid JSON found",
+                    response=response[:500],
+                )
+                return _safe_default("Unable to analyze — proceeding with caution", "JSON parse error")
 
             reasoning = ReasoningOutput(
                 problem_type=reasoning_data.get("problem_type", "mixed"),
@@ -194,32 +194,9 @@ RESPOND ONLY WITH JSON."""
 
             return reasoning
 
-        except json.JSONDecodeError as e:
-            # response_text is always a str here — never unbound
-            logger.error(
-                "reasoner_json_error", error=str(e), response=response_text[:500]
-            )
-            return ReasoningOutput(
-                problem_type="mixed",
-                strategy="Unable to analyze — proceeding with caution",
-                needs_memory=True,
-                needs_search=True,
-                likely_tools=[],
-                uncertainties=["analysis failed — JSON parse error"],
-                confidence=0.3,
-            )
-
         except Exception as e:
             logger.error("reasoner_error", error=str(e))
-            return ReasoningOutput(
-                problem_type="mixed",
-                strategy="Error in analysis — using safe defaults",
-                needs_memory=True,
-                needs_search=True,
-                likely_tools=[],
-                uncertainties=[f"analysis error: {str(e)}"],
-                confidence=0.2,
-            )
+            return _safe_default("Error in analysis — using safe defaults", str(e))
 
     # ------------------------------------------------------------------
     # Convenience helpers used by loop_v3
@@ -236,3 +213,16 @@ RESPOND ONLY WITH JSON."""
     def should_use_search(self, reasoning: ReasoningOutput) -> bool:
         """Return True if the reasoner determined web search is needed."""
         return reasoning.needs_search
+
+
+def _safe_default(strategy: str, uncertainty: str) -> ReasoningOutput:
+    """Return a conservative ReasoningOutput when analysis fails."""
+    return ReasoningOutput(
+        problem_type="mixed",
+        strategy=strategy,
+        needs_memory=True,
+        needs_search=True,
+        likely_tools=[],
+        uncertainties=[uncertainty],
+        confidence=0.2,
+    )

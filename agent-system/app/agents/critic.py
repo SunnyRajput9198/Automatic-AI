@@ -1,6 +1,4 @@
-import json
 import structlog
-from typing import Dict, Any
 from enum import Enum
 from app.utils.json_parser import extract_json
 from app.tools.base import ToolResult
@@ -65,6 +63,10 @@ BE STRICT BUT FAIR:
 - If output contains the correct answer, verdict is PASS
 - Do NOT fail a step because the method is not shown
 - Short correct output is still PASS
+- If the instruction asks to summarize, extract, or answer using SESSION HISTORY,
+  verdict is PASS as long as the output is a coherent response — do NOT judge
+  whether the history content matches your expectations or is factually correct.
+  The executor cannot change what is in the session history; retrying is pointless.
 
 RESPOND ONLY WITH JSON.
 """
@@ -94,6 +96,11 @@ RESPOND ONLY WITH JSON.
                 suggestions="",
             )
 
+        try:
+            metadata_str = str(tool_result.metadata)
+        except Exception:
+            metadata_str = "(unserializable metadata)"
+
         user_prompt = f"""STEP INSTRUCTION:
 {step_instruction}
 
@@ -101,11 +108,11 @@ TOOL EXECUTION:
 - Success: {tool_result.success}
 - Output: {tool_result.output[:500] if tool_result.output else "(empty)"}
 - Error: {tool_result.error if tool_result.error else "(none)"}
-- Metadata: {json.dumps(tool_result.metadata)}
+- Metadata: {metadata_str}
 
 RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
 
-    Evaluate if this step succeeded and return verdict JSON.
+Evaluate if this step succeeded and return verdict JSON.
 """
 
         try:
@@ -119,7 +126,12 @@ RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
             # ---- ROBUST JSON EXTRACTION ----
             evaluation = extract_json(response, context="critic")
             if not evaluation:
-                raise json.JSONDecodeError("No valid JSON found", response or "", 0)
+                logger.error("critic_json_error", error="No valid JSON found")
+                return CriticResult(
+                    verdict=Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL,
+                    reason="Failed to parse evaluation JSON: No valid JSON found",
+                    suggestions="Ensure the response is valid JSON only",
+                )
 
             verdict_raw = evaluation.get("verdict", "FAIL")
             try:
@@ -140,16 +152,6 @@ RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
                 verdict=verdict,
                 reason=reason,
                 suggestions=suggestions,
-            )
-
-        except json.JSONDecodeError as e:
-            logger.error("critic_json_error", error=str(e))
-            return CriticResult(
-                verdict=(
-                    Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL
-                ),
-                reason=f"Failed to parse evaluation JSON: {str(e)}",
-                suggestions="Ensure the response is valid JSON only",
             )
 
         except Exception as e:

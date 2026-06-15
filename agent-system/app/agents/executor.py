@@ -2,7 +2,7 @@ import json
 import structlog
 from typing import Dict, Any, Optional
 from app.utils.json_parser import extract_json
-from app.utils.llm import call_llm, call_llm_with_system
+from app.utils.llm import call_llm_with_system
 from app.utils.file_manager import FileManager
 from app.tools.base import Tool, ToolResult
 from app.tools.python_tool import PythonExecutor
@@ -141,21 +141,6 @@ RESPOND ONLY WITH VALID JSON.
         logger.info("executor_context_keys", keys=list(context.keys()))
         try:
             # Fast-path: pure reasoning/summarization steps
-            reasoning_keywords = [
-                "summarize",
-                "summary",
-                "extract",
-                "findings",
-                "previous findings",
-                "previous task",
-                "answer the user's question",
-                "identify the key results",
-                "identify the characteristics",
-                "based on session",
-                "from session history",
-                "from the session history",
-                "from the provided session history",
-            ]
             if "session_history" in context and not any(
                 tool_word in instruction_l
                 for tool_word in [
@@ -168,45 +153,41 @@ RESPOND ONLY WITH VALID JSON.
                     "shell_executor",
                 ]
             ):
-                if "session_history" in context:
-                    history = context["session_history"]
+                history = context["session_history"]
 
-                    history_text = "\n\n".join(
-                        h.get("output", "")[:1000] for h in history
-                    )
+                history_text = "\n\n".join(
+                    h.get("output", "")[:1000] for h in history
+                )
 
-                    prompt = f"""
-                    User question:
-                    {instruction}
+                prompt = f"""User question:
+{instruction}
 
-                    Session history:
-                    {history_text}
+Session history:
+{history_text}
 
-                    Answer the user's question using the session history.
+Answer the user's question using the session history.
+Do not repeat the raw history.
+Provide a concise answer.
+Use bullet points if appropriate.
+"""
 
-                    Do not repeat the raw history.
-                    Provide a concise answer.
-                    Use bullet points if appropriate.
-                    """
+                logger.info("session_history_llm_prompt", prompt=prompt[:2000])
 
-                    logger.info("session_history_llm_prompt", prompt=prompt[:2000])
+                response = await call_llm_with_system(
+                    system_prompt=(
+                        "You answer questions using session history. "
+                        "Do not repeat raw history. "
+                        "Provide concise answers. "
+                        "Use bullet points for findings."
+                    ),
+                    user_prompt=prompt,
+                )
 
-                    response = await call_llm_with_system(
-                        system_prompt="""
-                        You answer questions using session history.
-
-                        Do not repeat raw history.
-                        Provide concise answers.
-                        Use bullet points for findings.
-                        """,
-                        user_prompt=prompt,
-                    )
-
-                    return ToolResult(
-                        success=True,
-                        output=response,
-                        metadata={"source": "session_history"},
-                    )
+                return ToolResult(
+                    success=True,
+                    output=response,
+                    metadata={"source": "session_history"},
+                )
         except Exception as e:
             logger.warning("executor_session_fast_path_failed", error=str(e))
 
@@ -346,7 +327,7 @@ RESPOND ONLY WITH VALID JSON.
             if "session_history" in context:
                 safe_context["session_history"] = str(context["session_history"])[:300]
             context_str = "\n\nCONTEXT FROM PREVIOUS STEPS:\n" + json.dumps(
-                safe_context, indent=2
+                safe_context, indent=2, default=str
             )
         preferred_tools_text = ""
 
@@ -386,15 +367,7 @@ RESPOND ONLY WITH VALID JSON.
 
             response_text = response.strip()
 
-            # Strip markdown code fences if the model wrapped the JSON
-            if response_text.startswith("```"):
-                lines = response_text.split("\n")
-                lines = lines[1:]  # drop the opening ```json / ```
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                response_text = "\n".join(lines).strip()
-
-            # Attempt 1: direct parse
+            # extract_json handles markdown fences internally
             decision = extract_json(response_text, context="executor")
             if not decision:
                 logger.error(

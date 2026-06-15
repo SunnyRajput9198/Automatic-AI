@@ -55,7 +55,7 @@ class BaseAgent(ABC):
             role=self.role,
             allowed_tools=self.allowed_tools,
         )
-
+# @abstractmethod ensures that all derived agents implement the execute method
     @abstractmethod
     async def execute(
         self, task: str, context: Optional[Dict[str, Any]] = None

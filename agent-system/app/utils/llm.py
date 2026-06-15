@@ -4,8 +4,7 @@ import asyncio
 import structlog
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-from anthropic.types import TextBlock  # add this import
-
+from anthropic.types import TextBlock 
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -33,10 +32,10 @@ class RateLimiter:
         self.max_calls = max_calls
         self.period = timedelta(seconds=period_seconds)
         self.calls: List[datetime] = []
-        self._lock = asyncio.Lock()
+        self._lock = asyncio.Lock()#_ means Internal/private by convention
 
     async def wait_if_needed(self):
-        async with self._lock:
+        async with self._lock:#Only one async task can enter this block at a time.
             now = datetime.now()
 
             self.calls = [t for t in self.calls if now - t < self.period]
@@ -51,6 +50,9 @@ class RateLimiter:
                         provider="anthropic",
                     )
                     await asyncio.sleep(wait_seconds)
+                    # Re-prune after sleeping, then append
+                    self.calls = [t for t in self.calls if datetime.now() - t < self.period]
+
 
             self.calls.append(datetime.now())
 
@@ -115,7 +117,7 @@ def _sync_claude_call(
     messages: List[Dict[str, str]],
     model: str,
     temperature: float,
-    max_tokens: int,
+    max_tokens: int
 ) -> str:
     system_prompt, anthropic_messages = _convert_messages(messages)
 
@@ -140,7 +142,6 @@ def _sync_claude_call(
             return block.text
 
     raise ValueError("No TextBlock found in Claude response")
-    # remove the old: return response.content[0].text
 
 
 # -------------------------------
@@ -161,7 +162,6 @@ async def call_llm(
     - structured logging
     - proper system prompt handling
     """
-
     await rate_limiter.wait_if_needed()
 
     logger.info(
@@ -216,7 +216,6 @@ async def call_llm_with_system(
         max_tokens=max_tokens,
     )
 
-
 def _sync_groq_call(
     messages: List[Dict[str, str]],
     model: str,
@@ -229,12 +228,13 @@ def _sync_groq_call(
     response = _groq_client.chat.completions.create(
         model=model,
         messages=messages,   # type: ignore
-        # Groq uses OpenAI format directly
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    return  str(response.choices[0].message.content)
-
+    content = response.choices[0].message.content
+    if not content:
+        raise ValueError("Empty response from Groq")
+    return content
 
 async def call_groq(
     messages: List[Dict[str, str]],

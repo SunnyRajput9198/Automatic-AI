@@ -3,8 +3,10 @@ import os
 import structlog
 from typing import Dict
 
-logger = structlog.get_logger()
 from app.core.config import settings
+
+logger = structlog.get_logger()
+
 WORKSPACE = settings.SHARED_WORKSPACE
 MEMORY_PATH = os.path.join(WORKSPACE, "agent_performance.json")
 
@@ -18,10 +20,14 @@ class AgentPerformanceMemory:
         self._load()
 
     def _load(self):
-        if os.path.exists(MEMORY_PATH):
-            with open(MEMORY_PATH, "r") as f:
-                self.memory = json.load(f)
-        else:
+        try:
+            if os.path.exists(MEMORY_PATH):
+                with open(MEMORY_PATH, "r") as f:
+                    self.memory = json.load(f)
+            else:
+                self.memory = {}
+        except Exception as e:
+            logger.error("agent_performance_memory_corrupted", error=str(e))
             self.memory = {}
 
     def save(self):

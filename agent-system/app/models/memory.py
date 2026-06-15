@@ -1,22 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import DateTime, Float, Integer, String, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 
-# ---------------------------------------------------------------------------
-# Base
-# ---------------------------------------------------------------------------
-# Using SQLAlchemy 2.0 DeclarativeBase so that mapped_column() and Mapped[]
-# produce fully-typed columns — no more Column[Unknown] from the type checker.
-# ---------------------------------------------------------------------------
-
-
-class Base(DeclarativeBase):
-    pass
+from app.db.base import Base
 
 
 class Memory(Base):
@@ -30,8 +21,6 @@ class Memory(Base):
 
     Column types are explicitly declared with Mapped[T] so static type
     checkers (Pyright / mypy) know the Python type of every attribute.
-    This eliminates the "Column[Unknown] cannot be assigned to float"
-    errors that occur when doing float(mem.success_rate) etc.
     """
 
     __tablename__ = "memories"
@@ -68,12 +57,14 @@ class Memory(Base):
     last_used: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
         nullable=False,
     )
 
@@ -105,11 +96,13 @@ class TaskContext(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
         nullable=False,
     )

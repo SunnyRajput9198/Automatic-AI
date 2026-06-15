@@ -4,8 +4,7 @@ import os
 import structlog
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-from dataclasses import dataclass, asdict
-from datetime import datetime
+from dataclasses import dataclass, asdict, field
 
 logger = structlog.get_logger()
 
@@ -13,15 +12,12 @@ COSTS_DIR = os.getenv("COSTS_DIR", "/app/costs")
 @dataclass
 class LLMCall:
     """Single LLM call record"""
-    agent: str  # Which agent made the call
+    agent: str
     model: str
-    timestamp: float
     duration_ms: float
-    tokens_estimated: int  # Rough estimate based on response length
-    purpose: str  # "reasoning", "planning", "execution", etc.
-    
-    def __post_init__(self):
-        self.timestamp=datetime.now().timestamp()
+    tokens_estimated: int
+    purpose: str
+    timestamp: float = field(default_factory=time.time)
 
 @dataclass
 class TaskCost:
@@ -70,7 +66,7 @@ class CostTracker:
     TOKENS_PER_CHAR = 0.25  # ~4 chars per token
     COST_PER_1M_TOKENS = {
         "claude-haiku-4-5-20251001": 0.25,
-        "claude-sonnet-4-5-20250514": 3.00,
+        "claude-haiku-4-5-20251001": 3.00,
     }
     
     def __init__(self):
@@ -122,10 +118,9 @@ class CostTracker:
         call = LLMCall(
             agent=agent,
             model=model,
-            timestamp=time.time(),
             duration_ms=duration_ms,
             tokens_estimated=tokens_est,
-            purpose=purpose
+            purpose=purpose,
         )
         
         self.current_task.llm_calls.append(call)

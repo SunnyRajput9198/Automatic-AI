@@ -23,7 +23,7 @@ def extract_json(response: str, context: str = "") -> Optional[dict]:
     if not response:
         return None
 
-    text = response.strip()
+    text = response.strip()#remove all trailing or leading whitespaces
 
     # Strip markdown code fences
     if text.startswith("```"):
@@ -38,21 +38,21 @@ def extract_json(response: str, context: str = "") -> Optional[dict]:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+        # Find outermost JSON object by brace matching
+    for start_char, end_char in [("{", "}"), ("[", "]")]:
+        depth = 0
+        start_idx = end_idx = -1
 
-    # Find outermost JSON object by brace matching
-    brace_count = 0
-    start_idx = end_idx = -1
-
-    for i, char in enumerate(text):
-        if char == "{":
-            if brace_count == 0:
-                start_idx = i
-            brace_count += 1
-        elif char == "}":
-            brace_count -= 1
-            if brace_count == 0 and start_idx != -1:
-                end_idx = i
-                break
+        for i, char in enumerate(text):
+            if char == "{":
+                if depth == 0:
+                    start_idx = i
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0 and start_idx != -1:
+                    end_idx = i
+                    break
 
     if start_idx != -1 and end_idx != -1:
         try:
@@ -65,5 +65,5 @@ def extract_json(response: str, context: str = "") -> Optional[dict]:
                 preview=text[start_idx : start_idx + 200],
             )
 
-    logger.error("json_parser_no_json_found", context=context, preview=text[:200])
+    logger.error("json_parser_no_json_found", context=context, preview=text[:150])
     return None

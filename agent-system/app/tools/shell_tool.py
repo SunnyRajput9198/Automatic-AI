@@ -4,10 +4,10 @@ import structlog
 import shlex
 from typing import Any, Dict
 
+from app.core.config import settings
 from app.tools.base import Tool, ToolResult
 
 logger = structlog.get_logger()
-from app.core.config import settings
 
 
 class ShellExecutor(Tool):
