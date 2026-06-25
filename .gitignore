@@ -2,7 +2,9 @@
 
 # dependencies
 /node_modules
-
+/agent-system/.venv
+/agent-system/node_modules
+/agent-system/workspace/shared
 # next.js
 /.next/
 /out/

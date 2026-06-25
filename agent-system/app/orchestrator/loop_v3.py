@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 import json
 import time
 from pathlib import Path
-
 from app.utils.reference_resolver import ReferenceResolver
 from app.agents.memory.qdrant_memory import QdrantMemory
 from app.utils.file_manager import FileManager

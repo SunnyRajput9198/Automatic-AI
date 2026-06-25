@@ -19,23 +19,27 @@ python-multipart==0.0.22
 tabulate==0.10.0
 
 # Logging
-structlog==25.5.0
+structlog
 
 # LLMs
 anthropic==0.85.0
 langchain==1.2.12
 groq==0.13.0
+langchain-community
 langchain-anthropic==1.4.0
 langgraph==1.1.2
 openai==1.10.0
 langchain-google-genai
 google-genai
-
+ddgs
 # ML / Embeddings
 scikit-learn==1.8.0
 
 # Utils
-
+arxiv
 python-dotenv==1.2.2
 requests==2.32.5
 httpx==0.28.1
+arxiv  # For LangChain ArXiv integration
+ddgs  # For LangChain DuckDuckGo integration (replaces duckduckgo-search)
+wikipedia  # For LangChain Wikipedia integration
