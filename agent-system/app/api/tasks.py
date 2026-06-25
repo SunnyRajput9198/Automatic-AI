@@ -11,6 +11,7 @@ from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
 from app.agents.memory.tool_success_memory import ToolSuccessMemory
 from app.db.session import get_db
 from app.models.task import Task, Step, TaskStatus
+from app.orchestrator.graph import build_researcher_graph
 from app.orchestrator.loop_v3 import execute_task_v3 as execute_task
 
 logger = structlog.get_logger()
@@ -81,6 +82,7 @@ async def create_task(
 
     # Execute task in background
     background_tasks.add_task(execute_task, task_id)
+    background_tasks.add_task(build_researcher_graph)
 
     return TaskResponse(
         task_id=task.id,

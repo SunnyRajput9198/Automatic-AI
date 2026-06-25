@@ -51,22 +51,32 @@ RESPONSE FORMAT (JSON only):
     "suggestions": "specific changes to try (only for RETRY)"
 }
 
-EVALUATION CRITERIA:
-- Did the tool execute without errors?
-- Does the output match the step's intent?
-- Is the output useful for subsequent steps?
+EVALUATION CRITERIA (in order of importance):
+1. TOPICAL RELEVANCE — Is the output actually ABOUT the subject named in the
+   instruction, not just sharing a keyword with it? A result that mentions
+   "Python" but is about a completely different domain (e.g. astrotourism,
+   epidemiology, chip architecture) is OFF-TOPIC, even if it is well-written
+   and coherent. Off-topic output is a FAIL, regardless of fluency.
+2. Did the tool execute without errors?
+3. Is the output useful for subsequent steps?
 
-BE STRICT BUT FAIR:
-- Empty output may still be success
-- Error messages don't always mean failure
-- Judge based on intent, not verbosity
-- If output contains the correct answer, verdict is PASS
-- Do NOT fail a step because the method is not shown
-- Short correct output is still PASS
+BE STRICT ON TOPIC, LENIENT ON FORM:
+- Coherence, fluency, or "the tool ran successfully" is NOT sufficient for PASS
+  if the subject matter does not match the instruction. Judge the CONTENT,
+  not just whether something was returned.
+- Empty output may still be acceptable depending on intent, but irrelevant
+  non-empty output is worse than empty output — do not reward verbosity.
+- Do NOT fail a step merely because the method/process is not shown, or
+  because the answer is short — as long as the CONTENT is on-topic and correct.
+- If even one part of a mixed/multi-source result set is genuinely on-topic
+  and useful, PASS is acceptable. If most/all results are off-topic, FAIL.
+
+EXCEPTION — session history tasks:
 - If the instruction asks to summarize, extract, or answer using SESSION HISTORY,
   verdict is PASS as long as the output is a coherent response — do NOT judge
   whether the history content matches your expectations or is factually correct.
   The executor cannot change what is in the session history; retrying is pointless.
+  (This exception applies ONLY to session-history tasks, not to web search/research tasks.)
 
 RESPOND ONLY WITH JSON.
 """
@@ -128,7 +138,11 @@ Evaluate if this step succeeded and return verdict JSON.
             if not evaluation:
                 logger.error("critic_json_error", error="No valid JSON found")
                 return CriticResult(
-                    verdict=Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL,
+                    verdict=(
+                        Verdict.RETRY
+                        if retry_count < self.MAX_RETRIES
+                        else Verdict.FAIL
+                    ),
                     reason="Failed to parse evaluation JSON: No valid JSON found",
                     suggestions="Ensure the response is valid JSON only",
                 )

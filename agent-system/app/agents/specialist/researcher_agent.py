@@ -114,28 +114,30 @@ class ResearcherAgent(BaseAgent):
 
     def _extract_search_query(self, task: str) -> str:
         """
-        Extract search query from task description.
-
-        Removes common action words to get core query.
-        Preserves original casing for proper nouns.
+        Extract a clean, focused search query from a task description.
+        Removes action verbs AND filler/connector words that dilute search relevance.
         """
         action_words = [
-            "search for",
-            "research",
-            "find",
-            "look up",
-            "investigate",
-            "explore",
-            "discover",
-            "learn about",
+            "search for", "research", "find", "look up",
+            "investigate", "explore", "discover", "learn about",
+            "information about", "information on",
         ]
 
         query = task
-        for word in action_words:
-            # Case-insensitive removal while preserving the rest of the casing
-            query = re.sub(re.escape(word), "", query, flags=re.IGNORECASE).strip()
+        for phrase in action_words:
+            query = re.sub(re.escape(phrase), "", query, flags=re.IGNORECASE).strip()
 
-        # If query is too short, use original task
+        # Filler/connector words that add noise without adding search signal
+        filler_words = [
+            r"\bthe\b", r"\babout\b", r"\bfor\b", r"\bof\b",
+            r"\bregarding\b", r"\bconcerning\b",
+        ]
+        for pattern in filler_words:
+            query = re.sub(pattern, "", query, flags=re.IGNORECASE)
+
+        # Collapse extra whitespace left behind
+        query = re.sub(r"\s+", " ", query).strip()
+
         if len(query) < 5:
             query = task
 

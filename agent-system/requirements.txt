@@ -1,10 +1,10 @@
 # API
-fastapi==0.135.1
+fastapi
 uvicorn[standard]==0.42.0
 
 # Database
 sqlalchemy==2.0.25
-psycopg[binary]>=3.2.10
+psycopg[binary]
 alembic==1.18.4
 
 # Config
@@ -14,8 +14,8 @@ pydantic-settings==2.1.0
 qdrant-client
 sentence-transformers
 # HTTP
-httpx==0.28.1
-python-multipart==0.0.22
+httpx
+python-multipart
 tabulate==0.10.0
 
 # Logging
