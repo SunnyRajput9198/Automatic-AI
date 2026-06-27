@@ -1,4 +1,5 @@
 import uuid
+import os
 from datetime import datetime, timezone
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -8,6 +9,15 @@ from qdrant_client.models import (
 )
 
 from sentence_transformers import SentenceTransformer
+
+# Suppress HuggingFace Hub unauthenticated request warnings — the model
+# is cached locally after first download so no token is required.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+try:
+    from huggingface_hub.utils import disable_progress_bars
+    disable_progress_bars()
+except Exception:
+    pass
 
 
 class QdrantMemory:

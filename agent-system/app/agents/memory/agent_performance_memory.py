@@ -13,6 +13,8 @@ MEMORY_PATH = os.path.join(WORKSPACE, "agent_performance.json")
 class AgentPerformanceMemory:
     """
     Stores and recalls agent performance across runs.
+    Stats include a 'role' field so task_router can resolve
+    agent names (e.g. 'researcher_001') back to roles ('researcher').
     """
 
     def __init__(self):
@@ -36,13 +38,24 @@ class AgentPerformanceMemory:
             json.dump(self.memory, f, indent=2)
 
     def update(self, agent_name: str, stats: Dict):
+        """
+        Store stats for an agent.
+        Injects 'role' derived from the agent name if not already present
+        so task_router.py can resolve agent names to roles correctly.
+        """
+        # Derive role from name: "researcher_001" → "researcher"
+        if "role" not in stats:
+            role = agent_name.split("_")[0] if "_" in agent_name else agent_name
+            stats = {**stats, "role": role}
+
         self.memory[agent_name] = stats
         self.save()
 
         logger.info(
             "agent_performance_saved",
             agent=agent_name,
-            success_rate=stats.get("success_rate")
+            role=stats.get("role"),
+            success_rate=stats.get("success_rate"),
         )
 
     def get(self, agent_name: str):

@@ -199,10 +199,6 @@ REPLAN RULES (when a step failed):
 RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
 """
 
-    # REPLAN_SYSTEM_PROMPT is identical to SYSTEM_PROMPT — the base prompt
-    # already contains all replan rules. No need to duplicate them.
-    REPLAN_SYSTEM_PROMPT = SYSTEM_PROMPT
-
     def __init__(self, model: str = "gpt-5-mini"):
         self.model = model
 
@@ -223,85 +219,59 @@ RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
             )
         return validated
 
+    async def _call_llm(
+        self, system_prompt: str, user_prompt: str, log_context: str
+    ) -> List[Dict]:
+        """
+        Shared LLM call + parse + validate logic used by both plan() and replan().
+        Raises ValueError on parse/validation failure.
+        """
+        response = await call_openai_with_system(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=self.model,
+            temperature=0.1,
+        )
+
+        plan_data = extract_json(response, context=log_context)
+        if not plan_data:
+            logger.error(f"{log_context}_json_error",
+                         error="No valid JSON found", response=response[:500])
+            raise ValueError(f"Failed to parse {log_context} JSON: No valid JSON found")
+
+        steps = plan_data.get("steps", [])[:10]
+        validated = self._validate_steps(steps, log_context)
+        if not validated:
+            raise ValueError(f"{log_context} produced no valid steps")
+        return validated
+
     async def plan(self, user_task: str) -> List[Dict]:
         """Convert user task into executable steps."""
         logger.info("planner_starting", task=user_task)
-
-        user_prompt = f"""USER TASK:
-{user_task}
-
-Break this down into concrete, executable steps.
-Return JSON only.
-"""
+        user_prompt = f"USER TASK:\n{user_task}\n\nBreak this down into concrete, executable steps.\nReturn JSON only.\n"
         try:
-            response = await call_openai_with_system(
-                system_prompt=self.SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                model=self.model,
-                temperature=0.1,
-            )
-
-            plan_data = extract_json(response, context="planner")
-            if not plan_data:
-                logger.error("planner_json_error", error="No valid JSON found", response=response[:500])
-                raise ValueError("Failed to parse plan JSON: No valid JSON found")
-
-            steps = plan_data.get("steps", [])[:10]  # enforce max 10 steps
-            validated_steps = self._validate_steps(steps, "planner")
-
-            if not validated_steps:
-                raise ValueError("No valid executable steps generated")
-
-            logger.info("planner_completed", num_steps=len(validated_steps))
-            return validated_steps
-
+            steps = await self._call_llm(self.SYSTEM_PROMPT, user_prompt, "planner")
+            logger.info("planner_completed", num_steps=len(steps))
+            return steps
         except ValueError:
             raise
         except Exception as e:
             logger.error("planner_error", error=str(e))
             raise
 
-    async def replan(
-        self, original_task: str, failed_step: str, error: str
-    ) -> List[Dict]:
+    async def replan(self, original_task: str, failed_step: str, error: str) -> List[Dict]:
         """Create a new plan when a step fails."""
         logger.info("planner_replanning", failed_step=failed_step)
-
-        user_prompt = f"""ORIGINAL TASK:
-{original_task}
-
-FAILED STEP:
-{failed_step}
-
-ERROR:
-{error}
-
-The previous approach failed.
-Create a NEW plan that avoids this error.
-Return JSON only.
-"""
+        user_prompt = (
+            f"ORIGINAL TASK:\n{original_task}\n\n"
+            f"FAILED STEP:\n{failed_step}\n\n"
+            f"ERROR:\n{error}\n\n"
+            "The previous approach failed.\nCreate a NEW plan that avoids this error.\nReturn JSON only.\n"
+        )
         try:
-            response = await call_openai_with_system(
-                system_prompt=self.REPLAN_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                model=self.model,
-                temperature=0.1,
-            )
-
-            plan_data = extract_json(response, context="replanner")
-            if not plan_data:
-                logger.error("planner_replan_json_error", error="No valid JSON found", response=response[:500])
-                raise ValueError("Failed to parse replan JSON: No valid JSON found")
-
-            steps = plan_data.get("steps", [])[:10]  # enforce max 10 steps
-            validated_steps = self._validate_steps(steps, "planner_replan")
-
-            if not validated_steps:
-                raise ValueError("Replan produced no valid steps")
-
-            logger.info("planner_replan_completed", num_steps=len(validated_steps))
-            return validated_steps
-
+            steps = await self._call_llm(self.SYSTEM_PROMPT, user_prompt, "replanner")
+            logger.info("planner_replan_completed", num_steps=len(steps))
+            return steps
         except ValueError:
             raise
         except Exception as e:

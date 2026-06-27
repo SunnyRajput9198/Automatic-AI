@@ -81,28 +81,24 @@ class ToolSuccessMemory:
     def get_stats(self, tool_name: str):
         return self.memory.get(tool_name)
 
-    def top_tools(self):
+    def top_tools(self, min_calls: int = 3):
+        """
+        Return top 5 tools by success rate.
+        Tools with fewer than min_calls total uses are excluded to avoid
+        promoting tools that succeeded once and were never tested again.
+        """
         ranked = []
 
         for tool, stats in self.memory.items():
-            total = (
-                stats["success"] +
-                stats["failure"]
-            )
+            total = stats["success"] + stats["failure"]
 
-            score = (
-                stats["success"] / total
-                if total > 0
-                else 0
-            )
+            if total < min_calls:
+                continue  # not enough data to trust this tool's rate
 
-            ranked.append(
-                (tool, score)
-            )
+            score = stats["success"] / total
 
-        ranked.sort(
-            key=lambda x: x[1],
-            reverse=True,
-        )
+            ranked.append((tool, score))
+
+        ranked.sort(key=lambda x: x[1], reverse=True)
 
         return [x[0] for x in ranked[:5]]

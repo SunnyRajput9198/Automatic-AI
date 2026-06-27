@@ -183,6 +183,17 @@ class ConfidenceMemory:
     # Recall
     # ------------------------------------------------------------------
 
+    def _update_usage_counters(self, memory_ids: List[str]) -> None:
+        """Increment times_referenced and set last_used for a batch of memory IDs."""
+        if not memory_ids:
+            return
+        matched = self.db.query(Memory).filter(Memory.id.in_(memory_ids)).all()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        for mem_obj in matched:
+            mem_obj.times_referenced = int(mem_obj.times_referenced or 0) + 1
+            mem_obj.last_used = now
+        self.db.commit()
+
     async def recall_with_confidence(
         self,
         task_description: str,
@@ -289,17 +300,8 @@ class ConfidenceMemory:
             ]
             confidences = [m["confidence"] for m in relevant_memories]
 
-            # FIX: batch-update all matched Memory rows in one query instead of
-            # one db.query() per ID (was N+1 queries).
-            if relevant_ids:
-                matched_objs = (
-                    self.db.query(Memory).filter(Memory.id.in_(relevant_ids)).all()
-                )
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
-                for mem_obj in matched_objs:
-                    mem_obj.times_referenced = int(mem_obj.times_referenced or 0) + 1
-                    mem_obj.last_used = now
-                self.db.commit()
+            # Batch-update usage counters for selected memories
+            self._update_usage_counters(relevant_ids)
 
             avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
@@ -314,18 +316,7 @@ class ConfidenceMemory:
         except Exception as e:
             logger.error("confidence_recall_error", error=str(e))
             fallback = scored_memories[:limit]
-
-            # update usage counters even on fallback
-            fallback_ids = [m["id"] for m in fallback]
-            if fallback_ids:
-                matched_objs = (
-                    self.db.query(Memory).filter(Memory.id.in_(fallback_ids)).all()
-                )
-                now = datetime.now(timezone.utc).replace(tzinfo=None)
-                for mem_obj in matched_objs:
-                    mem_obj.times_referenced = int(mem_obj.times_referenced or 0) + 1
-                    mem_obj.last_used = now
-                self.db.commit()
+            self._update_usage_counters([m["id"] for m in fallback])
 
             avg_conf = (
                 sum(m["confidence"] for m in fallback) / len(fallback)

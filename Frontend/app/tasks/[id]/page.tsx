@@ -17,9 +17,11 @@ interface Step {
   step_number: number;
   instruction: string;
   status: StepStatus;
+  tool_name: string | null;
   result: string | null;
   error: string | null;
   retry_count: number;
+  completed_at: string | null;
 }
 
 interface Task {
@@ -27,6 +29,9 @@ interface Task {
   user_input: string;
   status: TaskStatus;
   created_at: string;
+  completed_at: string | null;
+  error_message: string | null;
+  session_id: string | null;
   steps: Step[];
 }
 
@@ -77,6 +82,16 @@ function StepCard({ step }: { step: Step }) {
         <span style={{ fontSize: 13.5, color: '#f0f0f2', flex: 1, lineHeight: 1.5 }}>
           {step.instruction}
         </span>
+        {step.tool_name && (
+          <span style={{
+            fontSize: 10, padding: '2px 7px', borderRadius: 20,
+            background: 'rgba(99,102,241,0.1)', color: '#6366f1',
+            border: '1px solid rgba(99,102,241,0.2)', flexShrink: 0,
+            fontFamily: 'JetBrains Mono, monospace',
+          }}>
+            {step.tool_name}
+          </span>
+        )}
         {step.retry_count > 0 && (
           <span style={{
             fontSize: 11, padding: '2px 8px', borderRadius: 20,
@@ -331,6 +346,31 @@ export default function TaskPage() {
                 }}>
                   {task.user_input}
                 </h1>
+                {task.completed_at && (
+                  <div style={{ fontSize: 12, color: '#5c5c6e', marginTop: 8, fontFamily: 'JetBrains Mono, monospace' }}>
+                    Completed {new Date(task.completed_at).toLocaleString()}
+                  </div>
+                )}
+                {task.error_message && task.status === 'FAILED' && (
+                  <div style={{
+                    marginTop: 10, padding: '10px 14px', borderRadius: 8,
+                    background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)',
+                    fontSize: 12, color: '#ef4444',
+                  }}>
+                    {task.error_message}
+                  </div>
+                )}
+                {task.session_id && (
+                  <div style={{ fontSize: 12, color: '#5c5c6e', marginTop: 6 }}>
+                    Session:{' '}
+                    <span
+                      style={{ color: '#6366f1', cursor: 'pointer', fontFamily: 'JetBrains Mono, monospace' }}
+                      onClick={() => router.push(`/sessions`)}
+                    >
+                      {task.session_id}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Progress bar */}

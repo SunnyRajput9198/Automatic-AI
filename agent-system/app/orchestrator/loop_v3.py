@@ -333,41 +333,60 @@ async def execute_task_v3(task_id: str) -> None:
                     logger.info("preferred_agent_applied", agent=preferred_agent)
 
                 if not is_memory_query(task.user_input):
-                    logger.info("orchestrator_coordination_phase")
-
-                    coordination_result = await coordinator.coordinate(
-                        task.user_input, context=context
-                    )
-                    logger.info(
-                        "coordination_result_debug",
-                        success=coordination_result.success,
-                        successful_agents=coordination_result.successful_agents,
-                        final_output=coordination_result.final_output[:500],
-                    )
-                    context.update(
-                        {
-                            "reasoning": reasoning_dict,
-                            "week4_output": coordination_result.final_output,
-                        }
-                    )
-                    task_metrics["week4_agents_used"] = coordination_result.total_agents
-                    task_metrics["week4_successful_agents"] = (
-                        coordination_result.successful_agents
-                    )
-                    if coordination_result.success and task.session_id:
-                        qdrant_memory.store_memory(
-                            session_id=task.session_id,
-                            query=task.user_input,
-                            result=coordination_result.final_output,
+                    # Skip coordinator for pure web_research — Phase 0c (research_graph)
+                    # handles those tasks end-to-end and produces better results.
+                    is_pure_web_research = (
+                        reasoning_output is not None
+                        and (
+                            reasoning_output.problem_type == "web_research"
+                            or reasoning_output.needs_search
                         )
-                    await ws_manager.emit(
-                        task_id,
-                        {
-                            "phase": "coordination",
-                            "status": "completed",
-                            "agents_used": coordination_result.total_agents,
-                        },
                     )
+
+                    if is_pure_web_research:
+                        logger.info(
+                            "skipping_coordination_for_web_research",
+                            task=task.user_input,
+                        )
+                        await ws_manager.emit(
+                            task_id, {"phase": "coordination", "status": "skipped"}
+                        )
+                    else:
+                        logger.info("orchestrator_coordination_phase")
+
+                        coordination_result = await coordinator.coordinate(
+                            task.user_input, context=context
+                        )
+                        logger.info(
+                            "coordination_result_debug",
+                            success=coordination_result.success,
+                            successful_agents=coordination_result.successful_agents,
+                            final_output=coordination_result.final_output[:500],
+                        )
+                        context.update(
+                            {
+                                "reasoning": reasoning_dict,
+                                "week4_output": coordination_result.final_output,
+                            }
+                        )
+                        task_metrics["week4_agents_used"] = coordination_result.total_agents
+                        task_metrics["week4_successful_agents"] = (
+                            coordination_result.successful_agents
+                        )
+                        if coordination_result.success and task.session_id:
+                            qdrant_memory.store_memory(
+                                session_id=task.session_id,
+                                query=task.user_input,
+                                result=coordination_result.final_output,
+                            )
+                        await ws_manager.emit(
+                            task_id,
+                            {
+                                "phase": "coordination",
+                                "status": "completed",
+                                "agents_used": coordination_result.total_agents,
+                            },
+                        )
                 else:
                     logger.info(
                         "skipping_coordination_for_memory_query",
@@ -403,9 +422,33 @@ async def execute_task_v3(task_id: str) -> None:
                 logger.info("orchestrator_research_graph_phase", task=task.user_input[:80])
                 try:
                     t0 = time.time()
+
+                    # ── Session-aware task enrichment ────────────────────────
+                    # If session history has prior research, prepend it to the
+                    # graph task so the planner/synthesizer can use it directly
+                    # instead of searching for the same topic again.
+                    graph_task = task.user_input
+                    session_ctx = context.get("session_history", [])
+                    if session_ctx:
+                        prior_outputs = "\n\n".join(
+                            f"Previous task: {h['task']}\nFindings: {h['output'][:600]}"
+                            for h in session_ctx
+                            if h.get("output", "").strip()
+                        )
+                        if prior_outputs:
+                            graph_task = (
+                                f"{task.user_input}\n\n"
+                                f"SESSION CONTEXT (use this to answer, do not search for it again):\n"
+                                f"{prior_outputs[:1200]}"
+                            )
+                            logger.info(
+                                "research_graph_enriched_with_session",
+                                prior_tasks=len(session_ctx),
+                            )
+
                     graph_state = await research_graph.ainvoke(
                         make_graph_state(
-                            task=task.user_input,
+                            task=graph_task,
                             session_id=task.session_id,
                         )
                     )
@@ -432,6 +475,12 @@ async def execute_task_v3(task_id: str) -> None:
 
                         # Persist the research as a completed step so the task
                         # has at least one trackable step in the DB.
+                        # Store enough of the output that the file confirmation
+                        # line ("wrote N characters to filename.txt") is included.
+                        step_result = graph_output
+                        if len(step_result) > 4000:
+                            # Keep the end (where the file confirmation is) + beginning
+                            step_result = step_result[:2000] + "\n...\n" + step_result[-500:]
                         research_step = Step(
                             id=str(uuid.uuid4()),
                             task_id=task_id,
@@ -439,7 +488,7 @@ async def execute_task_v3(task_id: str) -> None:
                             instruction=f"Research: {task.user_input}",
                             status=StepStatus.COMPLETED,
                             tool_name="web_search",
-                            result=graph_output[:2000],
+                            result=step_result,
                             retry_count=graph_state.get("retry_count", 0),
                         )
                         research_step.completed_at = _utcnow()
@@ -481,9 +530,11 @@ async def execute_task_v3(task_id: str) -> None:
                             },
                         )
 
-                        # If the graph produced a good result (PASS/RETRY with output),
-                        # mark task complete and skip the rest of the pipeline.
-                        if graph_state.get("critic_verdict") in ("PASS", "RETRY") and graph_output.strip():
+                        # If the graph produced any output (even FAIL with partial results),
+                        # complete the task — the synthesizer already wrote what it could.
+                        # Don't fall through to loop_v3 pipeline which would fail the same way.
+                        if graph_output.strip():
+                            verdict = graph_state.get("critic_verdict", "FAIL")
                             task.status = TaskStatus.COMPLETED
                             task.completed_at = _utcnow()
                             task_context.context_data = context
@@ -491,13 +542,13 @@ async def execute_task_v3(task_id: str) -> None:
                             logger.info(
                                 "orchestrator_research_graph_early_complete",
                                 task_id=task_id,
-                                verdict=graph_state.get("critic_verdict"),
+                                verdict=verdict,
                             )
                             await ws_manager.emit(
                                 task_id, {"phase": "completed", "status": "completed"}
                             )
                             finalize_and_export(task_metrics)
-                            global_cost_tracker.complete_task(success=True)
+                            global_cost_tracker.complete_task(success=verdict == "PASS")
                             return
 
                 except Exception as e:

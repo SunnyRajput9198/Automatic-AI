@@ -320,15 +320,21 @@ SYNTHESIZER_SYSTEM_PROMPT = """You are a research synthesizer. You receive raw w
 
 Your job:
 1. Read the raw search results carefully
-2. Extract the most relevant and accurate information
-3. Write a clear, concise answer to the original research question
-4. Cite sources inline where possible (e.g. "According to Wikipedia, ...")
-5. Use bullet points or sections when the topic has multiple distinct aspects
+2. If SESSION CONTEXT is provided, USE IT as the primary source — it contains research already done in this conversation
+3. Extract the most relevant and accurate information
+4. Write a clear, concise answer to the original research question
+5. Cite sources inline where possible (e.g. "According to Wikipedia, ...")
+6. Use bullet points or sections when the topic has multiple distinct aspects
+
+If SESSION CONTEXT is present and relevant:
+- Draw from it first before the raw search results
+- Synthesize both sources when the question builds on prior research
+- Example: if session has "vector database research" and question is "which is best" → use the session data to compare
 
 DO NOT:
 - Repeat the raw search result format
 - Include result numbers or source labels from the raw output
-- Make up information not present in the results
+- Make up information not present in the results or context
 
 Output a clean prose answer (with optional bullet points/headers). No JSON."""
 
@@ -346,14 +352,29 @@ async def synthesizer_node(state: AgentState) -> AgentState:
 
     logger.info("graph_synthesizer_node", task=task[:60])
 
+    # Separate session context from the bare task if it was injected
+    session_marker = "SESSION CONTEXT (use this to answer, do not search for it again):"
+    if session_marker in task:
+        parts = task.split(session_marker, 1)
+        bare_task = parts[0].strip()
+        session_ctx_text = parts[1].strip() if len(parts) > 1 else ""
+        user_prompt = (
+            f"RESEARCH QUESTION:\n{bare_task}\n\n"
+            f"SESSION CONTEXT (prior research in this conversation):\n{session_ctx_text}\n\n"
+            f"NEW SEARCH RESULTS:\n{raw[:2000]}\n\n"
+            f"Write a clean, structured answer using both the session context and new search results."
+        )
+    else:
+        user_prompt = (
+            f"RESEARCH QUESTION:\n{task}\n\n"
+            f"RAW SEARCH RESULTS:\n{raw[:3000]}\n\n"
+            f"Write a clean, structured answer to the research question."
+        )
+
     try:
         synthesized = await call_openai_with_system(
             system_prompt=SYNTHESIZER_SYSTEM_PROMPT,
-            user_prompt=(
-                f"RESEARCH QUESTION:\n{task}\n\n"
-                f"RAW SEARCH RESULTS:\n{raw[:3000]}\n\n"
-                f"Write a clean, structured answer to the research question."
-            ),
+            user_prompt=user_prompt,
             temperature=0.3,
             max_tokens=1500,
         )

@@ -2,9 +2,10 @@ import structlog
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 import asyncio
-from app.agents.base_agent import BaseAgent, AgentResult, BaseAgent
+from app.agents.base_agent import BaseAgent, AgentResult
 from app.agents.coordinator.task_router import TaskRouter
 from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
+from app.utils.llm import call_llm_with_system
 logger = structlog.get_logger()
 
 class CoordinationResult(BaseModel):
@@ -206,6 +207,18 @@ AGENTS SUPPORTED:
             routing_reasoning=routing.reasoning
         )
 
+        # LLM synthesis pass when multiple agents succeeded
+        successful_results = [r for r in agent_results if r.get("success")]
+        if len(successful_results) >= 2:
+            try:
+                synthesized = await self._synthesize_outputs(task, successful_results)
+                coordination_result = coordination_result.model_copy(
+                    update={"final_output": synthesized}
+                )
+                logger.info("coordinator_synthesis_applied")
+            except Exception as e:
+                logger.error("coordinator_synthesis_failed", error=str(e))
+
         logger.info(
             "coordinator_completed",
             success=coordination_result.success,
@@ -222,46 +235,30 @@ AGENTS SUPPORTED:
         execution_mode: str,
         routing_reasoning: str
     ) -> CoordinationResult:
-        """
-        Aggregate results from multiple agents into final output.
-        
-        Args:
-            task: Original task
-            agent_results: List of results from each agent
-            execution_mode: parallel or sequential
-            routing_reasoning: Why these agents were chosen
-            
-        Returns:
-            CoordinationResult with final output
-        """
         successful = [r for r in agent_results if r.get("success", False)]
-        failed = [r for r in agent_results if not r.get("success", False)]
-        
-        # Build final output
+        failed     = [r for r in agent_results if not r.get("success", False)]
+
         if not successful:
-            # All agents failed
             final_output = "All agents failed to complete the task."
             success = False
-        else:
-            # Combine successful outputs
-            outputs = [r["output"] for r in successful if r.get("output")]
-            
-            if len(outputs) == 1:
-                final_output = outputs[0]
-            else:
-                # Multiple outputs - combine them
-                final_output = "\n\n".join([
-                    f"=== {r['role'].upper()} OUTPUT ===\n{r['output']}"
-                    for r in successful
-                ])
-            
+        elif len(successful) == 1:
+            # Single agent — use its output directly, no synthesis needed
+            final_output = successful[0]["output"]
             success = True
-        
-        # Build reasoning
-        reasoning = f"Routing: {routing_reasoning}. "
+        else:
+            # Multiple agents — concatenate with clear headers
+            # (LLM synthesis happens asynchronously; for now produce a clean
+            #  structured string so the caller always gets something useful)
+            final_output = "\n\n".join([
+                f"=== {r['role'].upper()} OUTPUT ===\n{r['output']}"
+                for r in successful
+            ])
+            success = True
+
+        reasoning  = f"Routing: {routing_reasoning}. "
         reasoning += f"Executed {len(agent_results)} agents in {execution_mode} mode. "
         reasoning += f"{len(successful)} succeeded, {len(failed)} failed."
-        
+
         return CoordinationResult(
             success=success,
             final_output=final_output,
@@ -270,5 +267,38 @@ AGENTS SUPPORTED:
             total_agents=len(agent_results),
             successful_agents=len(successful),
             failed_agents=len(failed),
-            reasoning=reasoning
+            reasoning=reasoning,
         )
+
+    async def _synthesize_outputs(
+        self, task: str, outputs: List[Dict[str, Any]]
+    ) -> str:
+        """
+        LLM synthesis pass: combine multiple agent outputs into one
+        cohesive answer. Only called when ≥2 agents succeeded.
+        """
+        combined = "\n\n".join([
+            f"=== {r['role'].upper()} OUTPUT ===\n{r['output'][:1500]}"
+            for r in outputs
+        ])
+        system_prompt = (
+            "You are a result synthesizer. You receive outputs from multiple specialist "
+            "agents that worked on the same task. Your job is to combine them into a "
+            "single, well-structured, non-redundant answer. "
+            "Remove duplicates, reconcile any conflicts, and present the best composite result."
+        )
+        user_prompt = (
+            f"ORIGINAL TASK:\n{task}\n\n"
+            f"AGENT OUTPUTS:\n{combined}\n\n"
+            "Produce a unified, complete answer."
+        )
+        try:
+            return await call_llm_with_system(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.2,
+                max_tokens=2000,
+            )
+        except Exception as e:
+            logger.error("coordinator_synthesis_error", error=str(e))
+            return combined  # fall back to raw concat

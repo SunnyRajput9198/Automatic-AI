@@ -58,5 +58,29 @@
     "feedback": "good",
     "answer": "",
     "created_at": "2026-06-27T15:23:45.556072+00:00"
+  },
+  {
+    "query": "whihc database is best",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-27T18:34:49.831726+00:00"
+  },
+  {
+    "query": "Which vector databse is best",
+    "feedback": "bad",
+    "answer": "",
+    "created_at": "2026-06-27T18:38:24.619490+00:00"
+  },
+  {
+    "query": "fibonacci of 50",
+    "feedback": "good",
+    "answer": "12586269025\n",
+    "created_at": "2026-06-27T18:39:54.160597+00:00"
+  },
+  {
+    "query": "fibonacci of 50",
+    "feedback": "good",
+    "answer": "Successfully wrote 11 characters to fibonacci_50.txt",
+    "created_at": "2026-06-27T18:40:03.129574+00:00"
   }
 ]

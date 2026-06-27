@@ -5,6 +5,8 @@ from typing import Dict, Any, Optional
 from app.utils.json_parser import extract_json
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.utils.llm import call_llm_with_system
+from app.utils.file_manager import FileManager
+from app.core.config import settings
 
 logger = structlog.get_logger()
 
@@ -14,33 +16,36 @@ class WriterAgent(BaseAgent):
     Specialist agent for content creation.
 
     Takes information (often from researcher) and creates
-    well-formatted, readable content.
+    well-formatted, readable content, then saves it to the workspace.
     """
 
     SYSTEM_PROMPT = """You are a professional content writer. Your job is to create clear, engaging content.
 
 Given a task and context (often research findings), you:
-1. Understand the requirements (article, summary, blog post, etc.)
+1. Understand the requirements (article, summary, blog post, report, etc.)
 2. Structure the content appropriately
 3. Write in a clear, professional style
-4. Format for readability
+4. Format for readability using markdown where appropriate
 
 INPUT:
 - Task description (what to write)
 - Context (research findings, data, etc.)
 
-OUTPUT FORMAT:
+OUTPUT FORMAT (JSON only):
 {
-  "content": "the written content",
+  "content": "the full written content (use markdown formatting)",
   "title": "content title",
-  "word_count": estimated word count,
-  "format": "article|blog|summary|report",
-  "save_to_file": true|false,
-  "filename": "suggested_filename.txt"
+  "word_count": <estimated integer word count>,
+  "format": "article|blog|summary|report|email|outline",
+  "save_to_file": true,
+  "filename": "descriptive_filename.txt"
 }
 
-Make content engaging and well-structured.
-Use markdown formatting when appropriate.
+Rules:
+- Always set save_to_file to true and provide a meaningful filename ending in .txt
+- word_count should be your honest estimate of the actual words in content
+- If research findings are provided, draw from them — don't make things up
+- Keep content focused and complete
 
 RESPOND ONLY WITH JSON."""
 
@@ -49,26 +54,15 @@ RESPOND ONLY WITH JSON."""
     ):
         super().__init__(name=name, role="writer", allowed_tools=["file_write"])
         self.model = model
+        self._fm = FileManager(base_dir=settings.WORKSPACE_DIR)
 
     async def execute(
         self, task: str, context: Optional[Dict[str, Any]] = None
     ) -> AgentResult:
-        """
-        Execute writing task.
-
-        Args:
-            task: Writing task description
-            context: Optional context (usually from researcher)
-
-        Returns:
-            AgentResult with written content
-        """
         start_time = time.time()
-
         logger.info("writer_executing", task=task)
 
         try:
-            # Generate content using LLM
             content_result = await self._generate_content(task, context)
 
             if not content_result:
@@ -82,36 +76,49 @@ RESPOND ONLY WITH JSON."""
                     duration_sec=time.time() - start_time,
                 )
 
-            content = content_result.get("content", "")
-            title = content_result.get("title", "Untitled")
-            word_count = content_result.get("word_count", 0)
+            content        = content_result.get("content", "")
+            title          = content_result.get("title", "Untitled")
+            word_count     = content_result.get("word_count") or len(content.split())
             content_format = content_result.get("format", "text")
+            filename       = content_result.get("filename", "")
+            save_to_file   = content_result.get("save_to_file", True)
 
-            # Format output
-            output = f"# {title}\n\n"
-            output += content
-            output += f"\n\n---\n"
-            output += f"Format: {content_format} | Words: ~{word_count}"
+            # Build the final output string
+            output = f"# {title}\n\n{content}\n\n---\nFormat: {content_format} | Words: ~{word_count}"
+
+            # Actually write the file if requested
+            saved_file = ""
+            if save_to_file and filename:
+                # Ensure .txt extension
+                if not filename.endswith(".txt"):
+                    filename = filename.rsplit(".", 1)[0] + ".txt"
+                file_content = f"# {title}\n\n{content}"
+                ok = self._fm.write_file(filename, file_content)
+                if ok:
+                    saved_file = filename
+                    output += f"\n\nwrote {len(file_content)} characters to {filename}"
+                    logger.info("writer_file_saved", filename=filename)
+                else:
+                    logger.warning("writer_file_save_failed", filename=filename)
 
             duration = time.time() - start_time
-
             logger.info(
                 "writer_completed",
                 title=title,
                 word_count=word_count,
+                saved_file=saved_file,
                 duration=duration,
             )
 
             self.record_success()
-
             return AgentResult(
                 success=True,
                 output=output,
                 metadata={
-                    "title": title,
+                    "title":      title,
                     "word_count": word_count,
-                    "format": content_format,
-                    "filename": content_result.get("filename"),
+                    "format":     content_format,
+                    "filename":   saved_file,
                 },
                 confidence=0.8,
                 agent_name=self.name,
@@ -121,7 +128,6 @@ RESPOND ONLY WITH JSON."""
         except Exception as e:
             logger.error("writer_error", error=str(e))
             self.record_failure()
-
             return AgentResult(
                 success=False,
                 output="",
@@ -134,25 +140,26 @@ RESPOND ONLY WITH JSON."""
     async def _generate_content(
         self, task: str, context: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
-        """
-        Use LLM to generate content based on task and context.
-
-        Returns:
-            Dict with content, title, metadata
-        """
         context_str = ""
         if context:
+            # Prefer specific research keys; fall back to a safe JSON dump
             if "researcher_output" in context:
-                context_str = f"\n\nRESEARCH FINDINGS:\n{context['researcher_output']}"
+                context_str = f"\n\nRESEARCH FINDINGS:\n{context['researcher_output'][:2000]}"
+            elif "week4_output" in context:
+                context_str = f"\n\nRESEARCH FINDINGS:\n{context['week4_output'][:2000]}"
+            elif "search_results" in context:
+                context_str = f"\n\nSEARCH RESULTS:\n{context['search_results'][:2000]}"
             else:
-                context_str = f"\n\nCONTEXT:\n{json.dumps(context, indent=2, default=str)}"
+                safe = {k: v for k, v in context.items()
+                        if k in ("task_description", "session_history")}
+                if safe:
+                    context_str = f"\n\nCONTEXT:\n{json.dumps(safe, indent=2, default=str)[:1000]}"
 
-        user_prompt = f"""WRITING TASK:
-{task}
-{context_str}
-
-Create professional content based on the task and context.
-Return JSON only."""
+        user_prompt = (
+            f"WRITING TASK:\n{task}"
+            f"{context_str}\n\n"
+            "Create professional content. Return JSON only."
+        )
 
         try:
             response = await call_llm_with_system(
@@ -164,18 +171,8 @@ Return JSON only."""
 
             content_data = extract_json(response, context="writer")
             if not content_data:
-                logger.error(
-                    "writer_json_error",
-                    error="No valid JSON found",
-                    response_preview=(response or "")[:200],
-                )
+                logger.error("writer_json_error", response_preview=(response or "")[:200])
                 return None
-
-            logger.debug(
-                "writer_content_generated",
-                title=content_data.get("title"),
-                format=content_data.get("format"),
-            )
 
             return content_data
 

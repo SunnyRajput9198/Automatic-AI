@@ -6,12 +6,6 @@ import { AlertCircle, Loader2, ArrowRight, Zap, GitBranch, Wrench, BarChart2 } f
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000/api/v1';
 
-const SUGGESTIONS = [
-  'Research the latest papers on LLM reasoning and summarize key findings',
-  'Analyze the top 10 competitors in the AI agent space',
-  'Write and test a Python script to scrape HackerNews top stories',
-  'Explain quantum computing with real-world analogies',
-];
 
 const HOW_IT_WORKS = [
   { icon: ArrowRight, label: 'Submit', desc: 'Describe what you want accomplished' },
@@ -52,6 +46,8 @@ export default function Home() {
     setCharCount(e.target.value.length);
   };
 
+  const [sessionId, setSessionId] = useState('');
+
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     setError('');
@@ -68,7 +64,10 @@ export default function Home() {
       const response = await fetch(`${API_BASE_URL}/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: taskInput }),
+        body: JSON.stringify({
+          prompt: taskInput,
+          session_id: sessionId.trim() || null,
+        }),
       });
 
       if (!response.ok) throw new Error(`API error: ${response.statusText}`);
@@ -254,9 +253,11 @@ export default function Home() {
           </div>
           <nav style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto' }}>
             {[
+              { label: 'Sessions', path: '/sessions' },
               { label: 'Analytics', path: '/analytics' },
               { label: 'Files', path: '/files' },
               { label: 'Memory', path: '/memory' },
+              { label: 'System', path: '/system' },
             ].map(({ label, path }) => (
               <button
                 key={path}
@@ -302,17 +303,26 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="suggestions">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  className="pill"
-                  onClick={() => { setTaskInput(s); setCharCount(s.length); }}
-                  disabled={isLoading}
-                >
-                  {s.length > 48 ? s.slice(0, 46) + '…' : s}
-                </button>
-              ))}
+            {/* Session ID input */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginTop: 12,
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: 'var(--r)', padding: '9px 14px',
+            }}>
+              <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-m)', whiteSpace: 'nowrap' }}>
+                Session ID
+              </span>
+              <input
+                type="text"
+                placeholder="optional — group tasks into a session"
+                value={sessionId}
+                onChange={e => setSessionId(e.target.value)}
+                disabled={isLoading}
+                style={{
+                  flex: 1, background: 'none', border: 'none', outline: 'none',
+                  color: 'var(--text)', fontFamily: 'var(--font-m)', fontSize: 12,
+                }}
+              />
             </div>
 
             {error && (

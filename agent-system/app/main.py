@@ -4,7 +4,6 @@ import structlog
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.session import init_db
 from app.api import tasks
-from app.api import health
 from app.core.config import settings
 from fastapi import WebSocket, WebSocketDisconnect
 from app.utils.websocket_manager import ws_manager
@@ -32,8 +31,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
-
-app.include_router(health.router)
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
 
 app.add_middleware(

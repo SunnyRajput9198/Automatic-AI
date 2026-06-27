@@ -2,7 +2,7 @@ import json
 import structlog
 from typing import Dict, Any, Optional
 from app.utils.json_parser import extract_json
-from app.utils.llm import call_llm_with_system
+from app.utils.llm import call_llm_with_system, call_openai_with_system
 from app.utils.file_manager import FileManager
 from app.tools.base import Tool, ToolResult
 from app.tools.python_tool import PythonExecutor
@@ -68,11 +68,11 @@ RESPONSE FORMAT (JSON only):
 RESPOND ONLY WITH VALID JSON.
 """
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001"):
+    def __init__(self, model: str = "gpt-5-mini"):
         self.model = model
         self.tools: Dict[str, Tool] = {}
 
-        self.file_manager = FileManager()
+        self.file_manager = FileManager(base_dir=settings.WORKSPACE_DIR)
 
         if settings.ENABLE_PYTHON_EXECUTOR:
             self._register_tool(PythonExecutor())
@@ -173,7 +173,7 @@ Use bullet points if appropriate.
 
                 logger.info("session_history_llm_prompt", prompt=prompt[:2000])
 
-                response = await call_llm_with_system(
+                response = await call_openai_with_system(
                     system_prompt=(
                         "You answer questions using session history. "
                         "Do not repeat raw history. "
@@ -357,7 +357,7 @@ Use bullet points if appropriate.
             user_prompt += f"\n\nDO NOT USE THESE TOOLS: {context['avoid_tools']}"
 
         try:
-            response = await call_llm_with_system(
+            response = await call_openai_with_system(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 model=self.model,

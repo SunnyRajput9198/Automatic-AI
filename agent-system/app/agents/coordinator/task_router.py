@@ -33,45 +33,23 @@ class TaskRouter:
 
     # Keyword mappings
     RESEARCHER_KEYWORDS = [
-        "search",
-        "research",
-        "find",
-        "investigate",
-        "explore",
-        "discover",
-        "lookup",
-        "query",
-        "latest",
-        "current",
+        "search", "research", "find", "investigate", "explore", "discover",
+        "lookup", "query", "latest", "current", "what is", "who is",
+        "where is", "when did", "tell me about", "explain", "how does",
+        "compare", "analyze", "analyse", "difference between", "overview of",
     ]
 
     ENGINEER_KEYWORDS = [
-        "code",
-        "python",
-        "calculate",
-        "compute",
-        "script",
-        "program",
-        "implement",
-        "develop",
-        "build",
-        "create file",
-        "algorithm",
-        "function",
-        "class",
+        "code", "python", "calculate", "compute", "script", "program",
+        "implement", "develop", "build", "create file", "algorithm",
+        "function", "class", "run", "execute", "test", "debug", "fix",
+        "parse", "convert", "transform", "generate", "automate",
     ]
 
     WRITER_KEYWORDS = [
-        "write",
-        "draft",
-        "compose",
-        "document",
-        "article",
-        "blog",
-        "post",
-        "summary",
-        "report",
-        "format",
+        "write", "draft", "compose", "document", "article", "blog",
+        "post", "summary", "report", "format", "create content",
+        "essay", "email", "letter", "outline", "template", "describe",
     ]
 
     def __init__(self):
@@ -91,35 +69,42 @@ class TaskRouter:
         task_lower = task.lower()
         preferred_agent = self.pref_memory.get_preferred_agent(task)
 
+        # Check performance memory — only use it when the top-performing agent's
+        # role actually matches the type of task being routed.
+        # Avoids locking ALL tasks to the first agent that hits 80% success.
+        best_agent_for_task = None
+        best_rate = 0.0
+        task_lower_check = task.lower()
+        for agent_name, stats in self.performance_memory.all().items():
+            role = stats.get("role", "")
+            success_rate = stats.get("success_rate", 0)
+            if success_rate <= best_rate or success_rate < 0.8:
+                continue
+            # Only promote this agent if its role matches the task's signal
+            role_fits = (
+                (role == "researcher" and any(k in task_lower_check for k in self.RESEARCHER_KEYWORDS))
+                or (role == "engineer"  and any(k in task_lower_check for k in self.ENGINEER_KEYWORDS))
+                or (role == "writer"    and any(k in task_lower_check for k in self.WRITER_KEYWORDS))
+            )
+            if role_fits:
+                best_rate = success_rate
+                best_agent_for_task = role
+
+        if best_agent_for_task:
+            logger.info(
+                "router_using_performance_memory",
+                agent=best_agent_for_task,
+                success_rate=best_rate,
+            )
+            return RoutingDecision(
+                agents_needed=[best_agent_for_task],
+                execution_mode="sequential",
+                reasoning=f"Performance memory selected {best_agent_for_task} (success_rate={best_rate:.2f})",
+                confidence=min(best_rate, 0.95),
+            )
+
         if preferred_agent:
-            best_agent = None
-            best_rate = 0
-
-            for agent_name, stats in self.performance_memory.all().items():
-
-
-                success_rate = stats.get("success_rate", 0)
-
-                if success_rate > best_rate:
-                    best_rate = success_rate
-                    best_agent = stats.get("role", agent_name)
-
-            if best_agent and best_rate >= 0.8:
-
-                logger.info(
-                    "router_using_performance_memory",
-                    agent=best_agent,
-                    success_rate=best_rate,
-                )
-
-                return RoutingDecision(
-                    agents_needed=[best_agent],
-                    execution_mode="sequential",
-                    reasoning=f"Performance memory selected {best_agent}",
-                    confidence=min(best_rate, 0.95),
-                )
             logger.info("router_using_agent_preference", agent=preferred_agent)
-
             return RoutingDecision(
                 agents_needed=[preferred_agent],
                 execution_mode="sequential",
@@ -166,16 +151,20 @@ class TaskRouter:
 
             # map problem_type to agent
             type_to_agent = {
-                "file_operation": "engineer",
-                "web_research": "researcher",
-                "calculation": "engineer",
+                "file_operation":      "engineer",
+                "web_research":        "researcher",
+                "calculation":         "engineer",
                 "data_transformation": "engineer",
-                "system_operation": "engineer",
-                "mixed": "researcher",
+                "system_operation":    "engineer",
+                "mixed":               "researcher",  # handled below as multi-agent
             }
-            agent = type_to_agent.get(reasoning.problem_type, "researcher")
-            agents_needed.append(agent)
-            keywords_found.append(f"reasoner:{reasoning.problem_type}")
+            if reasoning.problem_type == "mixed":
+                agents_needed = ["researcher", "engineer"]
+                keywords_found.append("reasoner:mixed")
+            else:
+                agent = type_to_agent.get(reasoning.problem_type, "researcher")
+                agents_needed.append(agent)
+                keywords_found.append(f"reasoner:{reasoning.problem_type}")
 
         # Determine execution mode
         execution_mode = self._determine_execution_mode(task_lower, agents_needed)
@@ -216,10 +205,10 @@ class TaskRouter:
         - "and" without temporal words
         - Independent tasks
         """
-        # Check for sequential indicators
-        sequential_words = ["then", "after", "once", "first", "before"]
-        for word in sequential_words:
-            if word in task_lower:
+        # Check for sequential indicators (must be standalone time-order words)
+        sequential_words = ["then", "after that", "once done", "first then", "followed by"]
+        for phrase in sequential_words:
+            if phrase in task_lower:
                 return "sequential"
 
         # If researcher + writer, usually sequential (research first)
