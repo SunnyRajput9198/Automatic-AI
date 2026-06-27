@@ -29,7 +29,7 @@ class ReflectionAgent:
 
     RUNS AFTER: Task completion (success or failure)
     PURPOSE: Extract lessons and improve future performance
-    MODEL: Groq (analysis + learning)
+    MODEL: Claude (analysis + learning)
     """
 
     SYSTEM_PROMPT = """You are a reflection and learning agent. Your job is to analyze completed tasks and extract actionable lessons.

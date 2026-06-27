@@ -12,6 +12,9 @@ import app.utils
 import app.utils.json_parser
 import app.utils.llm
 from app.tools.base import ToolResult as _TR
+from app.utils.llm import call_openai_with_system
+from app.utils.file_manager import FileManager
+from app.core.config import settings
 from typing import TypedDict, Optional, List
 
 from langgraph.graph import StateGraph, START, END
@@ -71,10 +74,12 @@ class AgentState(TypedDict):
     retry_count:        int
 
     # ── Final ──────────────────────────────────────────────────────────────
-    final_output: str
-    success:      bool
-    confidence:   float
-    errors:       List[str]
+    final_output:      str
+    synthesized_output: str   # LLM-processed clean answer
+    saved_file:        str    # filename if written to workspace
+    success:           bool
+    confidence:        float
+    errors:            List[str]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,9 +124,24 @@ async def planner_node(state: AgentState) -> AgentState:
 
     def _clean_instruction(instruction: str) -> str:
         """Strip planner tool-directive prefix to get the bare search subject."""
+        # Priority: extract quoted query from patterns like:
+        #   'use web_search with query "X"'
+        #   'web_search with query "X" and ...'
+        quoted_query = re.search(
+            r'(?:web_search\s+(?:with\s+)?query|query\s*=)\s*["\']([^"\']{5,})["\']',
+            instruction, re.IGNORECASE
+        )
+        if quoted_query:
+            return quoted_query.group(1).strip()
+
         cleaned = _PLANNER_PREFIXES.sub("", instruction).strip()
         # Strip any residual leading preposition/noise (e.g. "about X" → "X")
         cleaned = _DANGLING_PREP.sub("", cleaned).strip()
+        # Strip trailing instructions like "and save..." or "and return..."
+        cleaned = re.sub(
+            r"\s+and\s+(save|return|store|write|output|append).*$",
+            "", cleaned, flags=re.IGNORECASE
+        ).strip()
         # Remove trailing punctuation left over
         cleaned = re.sub(r"[.,:;]+$", "", cleaned).strip()
         return cleaned if len(cleaned) >= 5 else instruction
@@ -227,26 +247,30 @@ async def researcher_node(state: AgentState) -> AgentState:
                     timeout=RESEARCHER_TIMEOUT_SEC)
         return {
             **state,
-            "search_query": effective_task,
-            "search_results": "",
-            "num_results": 0,
-            "sources_used": "",
-            "final_output": "",
-            "success": False,
-            "confidence": 0.0,
+            "search_query":      effective_task,
+            "search_results":    "",
+            "num_results":       0,
+            "sources_used":      "",
+            "final_output":      "",
+            "synthesized_output": "",
+            "saved_file":        "",
+            "success":           False,
+            "confidence":        0.0,
             "errors": state.get("errors", []) + [f"Researcher timed out after {RESEARCHER_TIMEOUT_SEC}s"],
         }
 
     return {
         **state,
-        "search_query":   result.metadata.get("query", ""),
-        "search_results": result.output,
-        "num_results":    result.metadata.get("num_results", 0),
-        "sources_used":   result.metadata.get("source", ""),
-        "final_output":   result.output,
-        "success":        result.success,
-        "confidence":     result.confidence,
-        "errors":         result.errors,
+        "search_query":      result.metadata.get("query", ""),
+        "search_results":    result.output,
+        "num_results":       result.metadata.get("num_results", 0),
+        "sources_used":      result.metadata.get("source", ""),
+        "final_output":      result.output,
+        "synthesized_output": "",
+        "saved_file":        "",
+        "success":           result.success,
+        "confidence":        result.confidence,
+        "errors":            result.errors,
     }
 
 async def critic_node(state: AgentState) -> AgentState:
@@ -289,6 +313,78 @@ async def critic_node(state: AgentState) -> AgentState:
         "confidence":         {"PASS": 0.9, "RETRY": 0.5, "FAIL": 0.1}.get(
                                 evaluation.verdict.value, 0.3
                             ),
+    }
+
+
+SYNTHESIZER_SYSTEM_PROMPT = """You are a research synthesizer. You receive raw web search results and produce a clean, well-structured answer.
+
+Your job:
+1. Read the raw search results carefully
+2. Extract the most relevant and accurate information
+3. Write a clear, concise answer to the original research question
+4. Cite sources inline where possible (e.g. "According to Wikipedia, ...")
+5. Use bullet points or sections when the topic has multiple distinct aspects
+
+DO NOT:
+- Repeat the raw search result format
+- Include result numbers or source labels from the raw output
+- Make up information not present in the results
+
+Output a clean prose answer (with optional bullet points/headers). No JSON."""
+
+
+async def synthesizer_node(state: AgentState) -> AgentState:
+    """
+    LLM post-processing node: turns raw search results into a clean answer
+    and saves it to the workspace as a .txt file.
+    """
+    raw = state.get("search_results", "")
+    task = state["task"]
+
+    if not raw.strip():
+        return {**state, "synthesized_output": "", "saved_file": ""}
+
+    logger.info("graph_synthesizer_node", task=task[:60])
+
+    try:
+        synthesized = await call_openai_with_system(
+            system_prompt=SYNTHESIZER_SYSTEM_PROMPT,
+            user_prompt=(
+                f"RESEARCH QUESTION:\n{task}\n\n"
+                f"RAW SEARCH RESULTS:\n{raw[:3000]}\n\n"
+                f"Write a clean, structured answer to the research question."
+            ),
+            temperature=0.3,
+            max_tokens=1500,
+        )
+    except Exception as e:
+        logger.error("graph_synthesizer_error", error=str(e))
+        synthesized = raw  # fall back to raw if LLM fails
+
+    # Save to workspace file
+    saved_file = ""
+    file_confirmation = ""
+    try:
+        fm = FileManager(base_dir=settings.WORKSPACE_DIR)
+        # Derive a clean filename from the task (max 40 chars, snake_case)
+        slug = re.sub(r"[^a-z0-9]+", "_", task.lower())[:40].strip("_")
+        filename = f"research_{slug}.txt"
+        content = f"Research Question: {task}\n\n{synthesized}"
+        success = fm.write_file(filename, content)
+        if success:
+            saved_file = filename
+            file_confirmation = f"\n\nwrote {len(content)} characters to {filename}"
+            logger.info("graph_synthesizer_saved", filename=filename)
+        else:
+            logger.warning("graph_synthesizer_save_failed", filename=filename)
+    except Exception as e:
+        logger.error("graph_synthesizer_save_error", error=str(e))
+
+    return {
+        **state,
+        "synthesized_output": synthesized,
+        "saved_file":         saved_file,
+        "final_output":       synthesized + file_confirmation,  # frontend regex picks up filename
     }
 
 
@@ -359,21 +455,23 @@ def build_researcher_graph():
     g.add_node("researcher",      researcher_node)
     g.add_node("critic",          critic_node)
     g.add_node("increment_retry", increment_retry)
+    g.add_node("synthesizer",     synthesizer_node)
 
     # Edges
     g.add_edge(START,             "planner")
     g.add_edge("planner",         "researcher")
     g.add_edge("researcher",      "critic")
-    g.add_edge(START,              "planner")      # 👈 START ab planner pe jaata hai
-    g.add_edge("planner",          "researcher")   # 👈 planner -> researcher
+    g.add_edge(START,              "planner")
+    g.add_edge("planner",          "researcher")
     g.add_edge("increment_retry", "researcher")    # retry loop
+    g.add_edge("synthesizer",     END)
 
-    # Conditional: critic → end OR retry
+    # Conditional: critic → synthesizer (PASS) OR retry OR end (FAIL)
     g.add_conditional_edges(
         "critic",
         route_after_critic,
         {
-            "end":   END,
+            "end":   "synthesizer",   # PASS → synthesize then end
             "retry": "increment_retry",
         },
     )
@@ -405,6 +503,8 @@ def make_initial_state(task: str, session_id: Optional[str] = None) -> AgentStat
         critic_suggestions="",
         retry_count=0,
         final_output="",
+        synthesized_output="",
+        saved_file="",
         success=False,
         confidence=0.0,
         errors=[],

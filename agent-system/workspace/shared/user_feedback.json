@@ -34,5 +34,29 @@
     "feedback": "good",
     "answer": "",
     "created_at": "2026-06-27T06:16:43.053157+00:00"
+  },
+  {
+    "query": "what is fastapi\n",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-27T13:49:15.304082+00:00"
+  },
+  {
+    "query": "search about vector databaeeas and suggest me the best one",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-27T14:58:31.372749+00:00"
+  },
+  {
+    "query": "what si vector emebdding and how it is differnt from vector databases\n",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-27T15:11:49.592983+00:00"
+  },
+  {
+    "query": "difference between ml and dl",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-27T15:23:45.556072+00:00"
   }
 ]

@@ -189,7 +189,7 @@ class FileManager:
         return {
             "name": filename,
             "size": stat.st_size,
-            "created": stat.st_ctime,
+            "created": stat.st_birthtime,
             "modified": stat.st_mtime,
             "path": str(filepath),
         }

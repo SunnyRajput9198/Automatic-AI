@@ -397,6 +397,11 @@ export default function TaskPage() {
                         <span style={{ color: e.status === 'completed' ? '#10b981' : e.status === 'failed' ? '#ef4444' : '#f59e0b' }}>
                           {e.status}
                         </span>
+                        {e.phase === 'research' && e.verdict && (
+                          <span style={{ color: e.verdict === 'PASS' ? '#10b981' : e.verdict === 'RETRY' ? '#f59e0b' : '#ef4444' }}>
+                            {' '}[{e.verdict}{e.num_results ? `, ${e.num_results} results` : ''}{e.retries ? `, ${e.retries} retries` : ''}]
+                          </span>
+                        )}
                         {e.step_number && <span> (step {e.step_number})</span>}
                         {e.problem_type && <span style={{ color: '#9898a8' }}> [{e.problem_type}]</span>}
                       </div>

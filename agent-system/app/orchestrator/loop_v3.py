@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 from app.utils.reference_resolver import ReferenceResolver
 from app.agents.memory.qdrant_memory import QdrantMemory
-from app.utils.file_manager import FileManager
 from app.utils.websocket_manager import cancellation_store
+from app.orchestrator.graph import research_graph, make_initial_state as make_graph_state
 from app.orchestrator.recovery_manager import RecoveryManager
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
@@ -253,11 +253,13 @@ async def execute_task_v3(task_id: str) -> None:
                             }
                         )
 
-                    context["session_history"] = session_context
+                    # Only set session_history if there are non-memory entries
+                    if session_context:
+                        context["session_history"] = session_context
                     logger.info(
                         "session_context_loaded",
                         session_id=task.session_id,
-                        num_previous_tasks=len(previous_tasks),
+                        num_previous_tasks=len(session_context),
                     )
 
             task.status = TaskStatus.RUNNING
@@ -380,6 +382,127 @@ async def execute_task_v3(task_id: str) -> None:
                     return
             except Exception as e:
                 logger.error("orchestrator_coordination_failed", error=str(e))
+
+            # ================================================================
+            # PHASE 0c: RESEARCH GRAPH (web_research tasks)
+            # Runs research_graph (Planner → Researcher → Critic with retry)
+            # when the reasoner identifies a web research task.
+            # Result is injected into context["week4_output"] so Phase 3
+            # planning and Phase 5 session history both see it.
+            # ================================================================
+            is_web_research = (
+                reasoning_output is not None
+                and (
+                    reasoning_output.problem_type == "web_research"
+                    or reasoning_output.needs_search
+                )
+                and not is_memory_query(task.user_input)
+            )
+
+            if is_web_research:
+                logger.info("orchestrator_research_graph_phase", task=task.user_input[:80])
+                try:
+                    t0 = time.time()
+                    graph_state = await research_graph.ainvoke(
+                        make_graph_state(
+                            task=task.user_input,
+                            session_id=task.session_id,
+                        )
+                    )
+                    elapsed = round(time.time() - t0, 2)
+
+                    logger.info(
+                        "orchestrator_research_graph_completed",
+                        verdict=graph_state.get("critic_verdict"),
+                        confidence=graph_state.get("confidence"),
+                        num_results=graph_state.get("num_results", 0),
+                        retries=graph_state.get("retry_count", 0),
+                        duration=elapsed,
+                    )
+
+                    # Inject graph output into context so planner / executor
+                    # and session history all see the research results.
+                    graph_output = graph_state.get("final_output", "")
+                    if graph_output:
+                        context["week4_output"]     = graph_output
+                        context["search_results"]   = graph_state.get("search_results", "")
+                        context["graph_verdict"]    = graph_state.get("critic_verdict", "")
+                        context["graph_confidence"] = graph_state.get("confidence", 0.0)
+                        context["graph_query"]      = graph_state.get("search_query", "")
+
+                        # Persist the research as a completed step so the task
+                        # has at least one trackable step in the DB.
+                        research_step = Step(
+                            id=str(uuid.uuid4()),
+                            task_id=task_id,
+                            step_number=1,
+                            instruction=f"Research: {task.user_input}",
+                            status=StepStatus.COMPLETED,
+                            tool_name="web_search",
+                            result=graph_output[:2000],
+                            retry_count=graph_state.get("retry_count", 0),
+                        )
+                        research_step.completed_at = _utcnow()
+                        db.add(research_step)
+
+                        # Track saved file if synthesizer wrote one
+                        saved_file = graph_state.get("saved_file", "")
+                        if saved_file:
+                            task_context.created_files = [
+                                *(task_context.created_files or []),
+                                saved_file,
+                            ]
+                            task_metrics["created_files"].append(saved_file)
+
+                        db.commit()
+
+                        global_cost_tracker.record_search()
+                        task_metrics["search_decision"] = {
+                            "should_search": True,
+                            "reason": "web_research task routed via research_graph",
+                        }
+
+                        # Store in qdrant for session memory
+                        if task.session_id:
+                            qdrant_memory.store_memory(
+                                session_id=task.session_id,
+                                query=task.user_input,
+                                result=graph_output,
+                            )
+
+                        await ws_manager.emit(
+                            task_id,
+                            {
+                                "phase": "research",
+                                "status": "completed",
+                                "verdict": graph_state.get("critic_verdict"),
+                                "num_results": graph_state.get("num_results", 0),
+                                "retries": graph_state.get("retry_count", 0),
+                            },
+                        )
+
+                        # If the graph produced a good result (PASS/RETRY with output),
+                        # mark task complete and skip the rest of the pipeline.
+                        if graph_state.get("critic_verdict") in ("PASS", "RETRY") and graph_output.strip():
+                            task.status = TaskStatus.COMPLETED
+                            task.completed_at = _utcnow()
+                            task_context.context_data = context
+                            db.commit()
+                            logger.info(
+                                "orchestrator_research_graph_early_complete",
+                                task_id=task_id,
+                                verdict=graph_state.get("critic_verdict"),
+                            )
+                            await ws_manager.emit(
+                                task_id, {"phase": "completed", "status": "completed"}
+                            )
+                            finalize_and_export(task_metrics)
+                            global_cost_tracker.complete_task(success=True)
+                            return
+
+                except Exception as e:
+                    # Non-fatal: log and fall through to normal loop_v3 pipeline
+                    logger.error("orchestrator_research_graph_failed", error=str(e))
 
             # ================================================================
             # PHASE 1: MEMORY RECALL
@@ -601,7 +724,7 @@ async def execute_task_v3(task_id: str) -> None:
                     },
                 )
 
-                max_retries = 2
+                max_retries = critic.MAX_RETRIES  # keep in sync with CriticAgent
                 retry_count = 0
                 step_succeeded = False
 
@@ -629,7 +752,7 @@ async def execute_task_v3(task_id: str) -> None:
                             duration_ms=(time.time() - t0) * 1000,
                         )
 
-                        if tool_result.metadata.get("tool_name") == "web_search":
+                        if tool_result.metadata.get("tool_name") in ("web_search", "web_fetch"):
                             global_cost_tracker.record_search()
 
                         step.result = tool_result.output
@@ -745,78 +868,78 @@ async def execute_task_v3(task_id: str) -> None:
                                 answer=evaluation.reason,
                             )
 
-                            reflection_output = None
-                            try:
-                                reflection_output = await reflection_agent.reflect(
-                                    task=task,
-                                    reasoning_used=reasoning_dict,
-                                    search_used=should_search,
-                                )
-                            except Exception as e:
-                                logger.error("reflection_failed", error=str(e))
+                            # Use recovery_manager directly with step-level info.
+                            # Avoid calling reflection_agent here — task.steps is
+                            # incomplete mid-execution and produces poor analysis.
+                            # Full reflection runs properly in Phase 5 after completion.
+                            step_failure_info = {
+                                "what_worked": [],
+                                "what_failed": [evaluation.reason],
+                                "root_causes": [tool_result.error or evaluation.reason],
+                                "lessons": [],
+                                "improvement_suggestions": [evaluation.suggestions or ""],
+                                "pattern_quality": 0.0,
+                                "confidence_updates": {},
+                            }
+                            decision = recovery_manager.decide(step_failure_info)
+                            logger.info(
+                                "recovery_attempt",
+                                action=decision.action,
+                                reason=decision.reason,
+                            )
 
-                            if reflection_output:
-                                decision = recovery_manager.decide(
-                                    reflection_output.model_dump()
-                                )
-                                logger.info(
-                                    "recovery_attempt",
-                                    action=decision.action,
-                                    reason=decision.reason,
-                                )
+                            if decision.action in (
+                                "retry",
+                                "retry_with_smaller_prompt",
+                            ):
+                                if decision.action == "retry_with_smaller_prompt":
+                                    context["prompt_reduction"] = True
+                                retry_count += 1
+                                db.commit()
+                                continue
 
-                                if decision.action in (
-                                    "retry",
-                                    "retry_with_smaller_prompt",
-                                ):
-                                    if decision.action == "retry_with_smaller_prompt":
-                                        context["prompt_reduction"] = True
-                                    retry_count += 1
-                                    db.commit()
-                                    continue
-
-                                elif decision.action == "switch_agent":
-                                    switched_result, new_agent = (
-                                        await agent_switcher.switch_and_execute(
-                                            failed_agent="executor",
-                                            instruction=step.instruction,
-                                            context=context,
-                                        )
+                            elif decision.action == "switch_agent":
+                                switched_result, new_agent = (
+                                    await agent_switcher.switch_and_execute(
+                                        failed_agent="executor",
+                                        instruction=step.instruction,
+                                        context=context,
                                     )
-                                    if switched_result:
-                                        step.result = switched_result.output
-                                        step.status = StepStatus.COMPLETED
-                                        step.completed_at = _utcnow()
-                                        context[f"step_{step_number}_output"] = (
-                                            switched_result.output
+                                )
+                                if switched_result:
+                                    step.result = switched_result.output
+                                    step.status = StepStatus.COMPLETED
+                                    step.completed_at = _utcnow()
+                                    context[f"step_{step_number}_output"] = (
+                                        switched_result.output
+                                    )
+                                    context[f"step_{step_number}_success"] = True
+                                    context["recovered_by_agent"] = new_agent
+                                    step_succeeded = True
+                                    if new_agent:
+                                        agent_pref_memory.record_success(
+                                            task_description=task.user_input,
+                                            agent_name=new_agent,
                                         )
-                                        context[f"step_{step_number}_success"] = True
-                                        context["recovered_by_agent"] = new_agent
-                                        step_succeeded = True
-                                        if new_agent:
-                                            agent_pref_memory.record_success(
-                                                task_description=task.user_input,
-                                                agent_name=new_agent,
-                                            )
-                                        logger.info(
-                                            "step_recovered_by_agent_switch",
-                                            step=step_number,
-                                            agent=new_agent,
-                                        )
-                                        db.commit()
-                                        break
-
-                                elif decision.action == "skip_step":
-                                    step.status = StepStatus.SKIPPED
+                                    logger.info(
+                                        "step_recovered_by_agent_switch",
+                                        step=step_number,
+                                        agent=new_agent,
+                                    )
                                     db.commit()
                                     break
 
-                                elif decision.action == "abort_task":
-                                    _fail_task(task, decision.reason)
-                                    db.commit()
-                                    finalize_and_export(task_metrics)
-                                    global_cost_tracker.complete_task(success=False)
-                                    return
+                            elif decision.action == "skip_step":
+                                step.status = StepStatus.SKIPPED
+                                db.commit()
+                                break
+
+                            elif decision.action == "abort_task":
+                                _fail_task(task, decision.reason)
+                                db.commit()
+                                finalize_and_export(task_metrics)
+                                global_cost_tracker.complete_task(success=False)
+                                return
 
                             # Hard fail — no recovery succeeded
                             step.status = StepStatus.FAILED

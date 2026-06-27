@@ -4,7 +4,7 @@ import structlog
 from pathlib import Path
 from typing import List, Dict, Any
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from tabulate import tabulate
 
 from app.db.session import get_db_context
@@ -62,7 +62,7 @@ class Week3Evaluator:
             "experiment": "learning",
             "task": task_description,
             "num_runs": num_runs,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "runs": [],
         }
 
@@ -290,7 +290,7 @@ async def test_week3_evaluation():
             task = db.query(Task).filter(Task.id == task_id).first()
             if task:
                 task.status = "COMPLETED"
-                task.completed_at = datetime.utcnow()
+                task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 db.commit()
 
     await week3_evaluator.run_learning_experiment(

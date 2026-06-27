@@ -6,16 +6,11 @@ import asyncio
 import structlog
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-from anthropic.types import TextBlock 
-from anthropic import Anthropic
+from langchain_anthropic import ChatAnthropic  # add at top, remove anthropic imports
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = structlog.get_logger()
-
-# -------------------------------
-# Configuration
-# -------------------------------
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"  # Best balance for agents
 
@@ -75,11 +70,9 @@ openai_rate_limiter = RateLimiter(max_calls=25, period_seconds=60)  # OpenAI has
 # -------------------------------
 # Anthropic Client (Initialized Once)
 # -------------------------------
-_api_key = os.getenv("ANTHROPIC_API_KEY")
-if not _api_key:
-    raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
-
-_client = Anthropic(api_key=_api_key)
+_anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+if not _anthropic_api_key:
+    logger.warning("ANTHROPIC_API_KEY not set - Anthropic/Claude calls will fail")
 
 # -------------------------------
 # Helpers
@@ -97,65 +90,24 @@ def _build_langchain_messages(messages: List[Dict[str, str]]):
             lc_messages.append(AIMessage(content=content))
     return lc_messages
 
-def _convert_messages(messages: List[Dict[str, str]]):
-    """
-    Convert OpenAI-style messages to Anthropic messages
-
-    Returns:
-        (system_prompt, anthropic_messages)
-    """
-    converted = []
-    system_prompt = None
-
-    for msg in messages:
-        role = msg["role"]
-        content = msg["content"]
-
-        if role == "system":
-            system_prompt = content
-        elif role == "user":
-            converted.append({"role": "user", "content": content})
-        elif role == "assistant":
-            converted.append({"role": "assistant", "content": content})
-
-    return system_prompt, converted
-
-
 def _sync_claude_call(
     messages: List[Dict[str, str]],
     model: str,
     temperature: float,
-    max_tokens: int
+    max_tokens: int,
 ) -> str:
-    system_prompt, anthropic_messages = _convert_messages(messages)
-
-    if system_prompt is not None:
-        response = _client.messages.create(
-            model=model,
-            system=system_prompt,
-            messages=anthropic_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-    else:
-        response = _client.messages.create(
-            model=model,
-            messages=anthropic_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-
-    for block in response.content:
-        if isinstance(block, TextBlock):
-            return block.text
-
-    raise ValueError("No TextBlock found in Claude response")
-
-
-# -------------------------------
-# Public Async API
-# -------------------------------
-
+    llm = ChatAnthropic(
+        model=model, # type: ignore
+        temperature=temperature,
+        max_tokens=max_tokens,  # type: ignore
+        api_key=_anthropic_api_key, 
+    )
+    lc_messages = _build_langchain_messages(messages)  # reuse same helper
+    response = llm.invoke(lc_messages)
+    content = str(response.content)
+    if not content:
+        raise ValueError("Empty response from Claude via LangChain")
+    return content
 
 async def call_llm(
     messages: List[Dict[str, str]],

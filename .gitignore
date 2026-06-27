@@ -10,7 +10,7 @@
 /out/
 
 # production
-/build
+agent-system/test_graph.py
 /workspace/shared/
 # debug
 npm-debug.log*

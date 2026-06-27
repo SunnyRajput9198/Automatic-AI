@@ -10,6 +10,7 @@ langchain-openai
 # Config
 pydantic-settings>=2.4.0
 pydantic==2.12.5
+langchain-anthropic
 
 # Vector Memory
 qdrant-client
@@ -24,13 +25,7 @@ structlog
 # LLMs
 anthropic==0.85.0
 langchain==1.2.12
-groq==0.13.0
 langchain-community
-langchain-anthropic==1.4.0
-langgraph==1.1.2
-openai==1.10.0
-langchain-google-genai
-google-genai
 ddgs
 
 # ML / Embeddings

@@ -388,7 +388,7 @@ export default function Home() {
         <footer className="footer">
           <span>Autonomous Agent</span>
           <div className="footer-dot" />
-          <span>Powered by Claude + Groq</span>
+          <span>Powered by Claude + OpenAI</span>
           <div className="footer-dot" />
           <span style={{ marginLeft: 'auto' }}>v1.0</span>
         </footer>
