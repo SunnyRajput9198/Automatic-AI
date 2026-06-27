@@ -1,5 +1,7 @@
+
 import os
-from groq import Groq
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 import asyncio
 import structlog
 from typing import List, Dict, Optional
@@ -61,19 +63,14 @@ rate_limiter = RateLimiter(max_calls=5, period_seconds=60)
 
 
 # -------------------------------
-# Groq Client (Initialized Once)
-# ---------------------
-_groq_api_key = os.getenv("GROQ_API_KEY")
-if not _groq_api_key:
-    logger.warning("GROQ_API_KEY not set - Groq calls will fail")
+# LangChain OpenAI Client
+# -------------------------------
+_openai_api_key = os.getenv("OPENAI_API_KEY")
+if not _openai_api_key:
+    logger.warning("OPENAI_API_KEY not set - OpenAI calls will fail")
 
-_groq_client = Groq(api_key=_groq_api_key) if _groq_api_key else None
-
-# Groq default model
-DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
-
-# Separate rate limiter for Groq (generous free tier)
-groq_rate_limiter = RateLimiter(max_calls=25, period_seconds=60)
+DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+openai_rate_limiter = RateLimiter(max_calls=25, period_seconds=60)  # OpenAI has higher rate limits
 
 # -------------------------------
 # Anthropic Client (Initialized Once)
@@ -87,7 +84,18 @@ _client = Anthropic(api_key=_api_key)
 # -------------------------------
 # Helpers
 # -------------------------------
-
+def _build_langchain_messages(messages: List[Dict[str, str]]):
+    """Convert OpenAI-style dicts to LangChain message objects."""
+    lc_messages = []
+    for msg in messages:
+        role, content = msg["role"], msg["content"]
+        if role == "system":
+            lc_messages.append(SystemMessage(content=content))
+        elif role == "user":
+            lc_messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            lc_messages.append(AIMessage(content=content))
+    return lc_messages
 
 def _convert_messages(messages: List[Dict[str, str]]):
     """
@@ -198,7 +206,28 @@ async def call_llm(
         )
         raise RuntimeError(f"Anthropic LLM call failed: {str(e)}")
 
+def _sync_openai_call(
+    messages: List[Dict[str, str]],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    if not _openai_api_key:
+        raise RuntimeError("OpenAI client not initialized - OPENAI_API_KEY missing")
 
+    llm = ChatOpenAI(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,# type: ignore
+        api_key=_openai_api_key,
+        base_url="https://aicredits.in/v1",
+    )
+    lc_messages = _build_langchain_messages(messages)
+    response = llm.invoke(lc_messages)
+    content = str(response.content)  # ← cast to str
+    if not content:
+        raise ValueError("Empty response from OpenAI via LangChain")
+    return content
 async def call_llm_with_system(
     system_prompt: str,
     user_prompt: str,
@@ -216,80 +245,36 @@ async def call_llm_with_system(
         max_tokens=max_tokens,
     )
 
-def _sync_groq_call(
-    messages: List[Dict[str, str]],
-    model: str,
-    temperature: float,
-    max_tokens: int,
-) -> str:
-    if not _groq_client:
-        raise RuntimeError("Groq client not initialized - GROQ_API_KEY missing")
 
-    response = _groq_client.chat.completions.create(
-        model=model,
-        messages=messages,   # type: ignore
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    content = response.choices[0].message.content
-    if not content:
-        raise ValueError("Empty response from Groq")
-    return content
-
-async def call_groq(
+async def call_openai(
     messages: List[Dict[str, str]],
-    model: str = DEFAULT_GROQ_MODEL,
+    model: str = DEFAULT_OPENAI_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 4000,
 ) -> str:
-    """
-    Groq LLM call — fast, free tier available.
-    Used for: critic, planner, reflection agents.
-    Models: llama-3.1-8b-instant, llama-3.3-70b-versatile
-    """
-    await groq_rate_limiter.wait_if_needed()
-
-    logger.info(
-        "groq_call_started",
-        model=model,
-        num_messages=len(messages),
-    )
+    await openai_rate_limiter.wait_if_needed()
+    logger.info("openai_call_started", model=model, num_messages=len(messages))
 
     try:
         content = await asyncio.to_thread(
-            _sync_groq_call,
-            messages,
-            model,
-            temperature,
-            max_tokens,
+            _sync_openai_call, messages, model, temperature, max_tokens
         )
-
-        logger.info(
-            "groq_call_completed",
-            model=model,
-            response_length=len(content),
-        )
-
+        logger.info("openai_call_completed", model=model, response_length=len(content))
         return content
 
     except Exception as e:
-        logger.error(
-            "groq_call_failed",
-            model=model,
-            error=str(e),
-        )
-        raise RuntimeError(f"Groq LLM call failed: {str(e)}")
+        logger.error("openai_call_failed", model=model, error=str(e))
+        raise RuntimeError(f"OpenAI LLM call failed: {str(e)}")
 
 
-async def call_groq_with_system(
+async def call_openai_with_system(
     system_prompt: str,
     user_prompt: str,
-    model: str = DEFAULT_GROQ_MODEL,
+    model: str = DEFAULT_OPENAI_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 4000,
 ) -> str:
-    """Convenience wrapper for Groq with system+user pattern."""
-    return await call_groq(
+    return await call_openai(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},

@@ -31,7 +31,7 @@ services:
       DATABASE_URL: postgresql+psycopg://agent:agent_password@postgres:5432/agent_system
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       WORKSPACE_DIR: /app/workspace
-      GROQ_API_KEY: ${GROQ_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       COSTS_DIR: /app/costs
       SHARED_WORKSPACE: /app/workspace/shared
       ENABLE_SHELL: "false"

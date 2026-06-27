@@ -15,7 +15,7 @@ class RecoveryManager:
     Converts reflection output into a concrete recovery action.
     Reads the fields that Reflection model actually produces:
     - what_failed, root_causes, improvement_suggestions, pattern_quality,
-      suggested_action
+    suggested_action
     """
 
     VALID_ACTIONS = {

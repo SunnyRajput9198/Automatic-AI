@@ -1,3 +1,5 @@
+from app.tools.base import Tool, ToolResult
+import wikipedia
 import json
 import asyncio
 import structlog
@@ -9,8 +11,6 @@ from langchain_community.utilities import (
     PubMedAPIWrapper,
     WikipediaAPIWrapper
 )
-from app.tools.base import Tool, ToolResult
-import wikipedia
 wikipedia.set_rate_limiting(True)
 logger = structlog.get_logger()
 
@@ -20,12 +20,12 @@ class WebSearchTool(Tool):
 
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=10, headers={"User-Agent": "ResearchAgent/1.0"})
-        self.wiki_wrapper = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=500)
+        self.wiki_wrapper = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=500)# type: ignore
         self.arxiv_client = arxiv_lib.Client()
         self.ddg_wrapper = DuckDuckGoSearchAPIWrapper(
             region="wt-wt", safesearch="moderate", time="y", max_results=5
         )
-        self.pubmed_wrapper = PubMedAPIWrapper(top_k_results=3, doc_content_chars_max=500)
+        self.pubmed_wrapper = PubMedAPIWrapper(top_k_results=3, doc_content_chars_max=500) # type: ignore
 
     async def close(self):
         await self.client.aclose()
@@ -60,7 +60,29 @@ class WebSearchTool(Tool):
         if any(kw in q for kw in general_kw):
             return False
         return True
+    def _is_academic_query(self, query: str) -> bool:
+        """
+        ArXiv only returns good results for genuine research-paper-style queries.
+        Skip ArXiv for product/framework/library names — it just returns noise.
+        """
+        academic_kw = [
+            "neural network", "algorithm", "paper", "model", "architecture",
+            "theorem", "proof", "dataset", "benchmark", "method", "approach",
+            "deep learning", "machine learning", "research", "study",
+        ]
+        # Known product/framework names that should NEVER trigger ArXiv
+        product_kw = [
+            "fastapi", "django", "flask", "react", "vue", "angular",
+            "docker", "kubernetes", "asyncio", "nodejs", "express",
+            "postgresql", "mongodb", "redis", "graphql", "rest api",
+        ]
 
+        q = query.lower()
+
+        if any(kw in q for kw in product_kw):
+            return False
+
+        return any(kw in q for kw in academic_kw)
     async def _wiki_search(self, query: str) -> list[dict]:
         for attempt in range(2):
             try:
@@ -103,7 +125,7 @@ class WebSearchTool(Tool):
         try:
             results = await asyncio.to_thread(self.pubmed_wrapper.run, query)
             papers = []
-            
+
             for entry in results.split("\n\n"):
                 if not entry.strip():
                     continue
@@ -115,10 +137,22 @@ class WebSearchTool(Tool):
                         summary = line.replace("Summary:", "").strip()
                     elif "pubmed.ncbi.nlm.nih.gov" in line.lower():
                         url = line.replace("URL:", "").strip()
-                
+
+                # Fallback: build URL from any 7-9 digit PubMed ID found in entry
+                if title and not url:
+                    import re as _re
+                    id_match = _re.search(r'\b(\d{7,9})\b', entry)
+                    if id_match:
+                        url = f"https://pubmed.ncbi.nlm.nih.gov/{id_match.group(1)}/"
+
                 if title:
-                    papers.append({"source": "PubMed", "title": title, "content": summary[:500], "url": url})
-            
+                    papers.append({
+                        "source": "PubMed",
+                        "title": title,
+                        "content": summary[:500],
+                        "url": url
+                    })
+
             return papers
         except Exception as e:
             logger.error("pubmed_search_error", error=str(e))
@@ -147,21 +181,33 @@ class WebSearchTool(Tool):
 
         try:
             is_technical = self._is_technical_query(query)
+            is_academic  = self._is_academic_query(query)
 
             if is_technical:
-                results = await asyncio.gather(
+                tasks = [
                     self._wiki_search(query),
-                    self._arxiv_search(query),
                     self._pubmed_search(query),
+                    self._duckduckgo_search(query),
+                ]
+                if is_academic:
+                    tasks.insert(1, self._arxiv_search(query))  # only add ArXiv if relevant
+                else:
+                    logger.info("web_search_skip_arxiv", query=query, reason="not academic-style")
+
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                sources = [item for result in results if isinstance(result, list) for item in result]
+            else:
+                # General query — Wikipedia + DuckDuckGo in parallel
+                wiki_results, ddg_results = await asyncio.gather(
+                    self._wiki_search(query),
                     self._duckduckgo_search(query),
                     return_exceptions=True,
                 )
-                sources = [item for result in results if isinstance(result, list) for item in result]
-            else:
-                wiki_results = await self._wiki_search(query)
-                if not wiki_results:
-                    wiki_results = await self._duckduckgo_search(query)  # 👈 fallback
-                sources = wiki_results
+                sources = []
+                if isinstance(wiki_results, list):
+                    sources.extend(wiki_results)
+                if isinstance(ddg_results, list):
+                    sources.extend(ddg_results)
 
             if not sources:
                 return ToolResult(

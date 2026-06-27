@@ -2,7 +2,7 @@ import structlog
 from enum import Enum
 from app.utils.json_parser import extract_json
 from app.tools.base import ToolResult
-from app.utils.llm import call_groq_with_system
+from app.utils.llm import call_openai_with_system
 
 logger = structlog.get_logger()
 
@@ -41,47 +41,65 @@ class CriticAgent:
 
 VERDICT OPTIONS:
 - PASS: Step completed successfully, continue to next step
-- RETRY: Step failed but can be retried with modifications
-- FAIL: Step failed and cannot be recovered
-
+- RETRY: Step failed but a different approach (e.g. a reformulated search
+    query) could plausibly fix it on a second attempt
+- FAIL: Step failed and no reasonable retry would help
 RESPONSE FORMAT (JSON only):
 {
     "verdict": "PASS|RETRY|FAIL",
+    "relevance_score": <0-100 integer, how well the output matches the instruction's subject>,
     "reason": "detailed explanation of why",
-    "suggestions": "specific changes to try (only for RETRY)"
+    "suggestions": "specific changes to try (REQUIRED for RETRY)"
 }
+
+SCORING GUIDE:
+- 80-100: Output is clearly about the exact subject named in the instruction → PASS
+- 40-79: Partially relevant, mentions related concepts but misses the core subject → RETRY
+- 0-39: Completely different domain/topic → RETRY (first attempt) or FAIL (later attempts)
 
 EVALUATION CRITERIA (in order of importance):
 1. TOPICAL RELEVANCE — Is the output actually ABOUT the subject named in the
-   instruction, not just sharing a keyword with it? A result that mentions
-   "Python" but is about a completely different domain (e.g. astrotourism,
-   epidemiology, chip architecture) is OFF-TOPIC, even if it is well-written
-   and coherent. Off-topic output is a FAIL, regardless of fluency.
+    instruction, not just sharing a keyword with it? A result that mentions
+    "Python" but is about a completely different domain (e.g. astrotourism,
+    epidemiology, chip architecture) is OFF-TOPIC, even if it is well-written
+    and coherent. Off-topic output is NOT a PASS, regardless of fluency.
 2. Did the tool execute without errors?
 3. Is the output useful for subsequent steps?
 
 BE STRICT ON TOPIC, LENIENT ON FORM:
 - Coherence, fluency, or "the tool ran successfully" is NOT sufficient for PASS
-  if the subject matter does not match the instruction. Judge the CONTENT,
-  not just whether something was returned.
+    if the subject matter does not match the instruction. Judge the CONTENT,
+    not just whether something was returned.
 - Empty output may still be acceptable depending on intent, but irrelevant
-  non-empty output is worse than empty output — do not reward verbosity.
+    non-empty output is worse than empty output — do not reward verbosity.
 - Do NOT fail a step merely because the method/process is not shown, or
-  because the answer is short — as long as the CONTENT is on-topic and correct.
+    because the answer is short — as long as the CONTENT is on-topic and correct.
 - If even one part of a mixed/multi-source result set is genuinely on-topic
-  and useful, PASS is acceptable. If most/all results are off-topic, FAIL.
+    and useful, PASS is acceptable. If most/all results are off-topic, do not
+    default to FAIL — first check whether RETRY applies (see below).
 
-EXCEPTION — session history tasks:
-- If the instruction asks to summarize, extract, or answer using SESSION HISTORY,
-  verdict is PASS as long as the output is a coherent response — do NOT judge
-  whether the history content matches your expectations or is factually correct.
-  The executor cannot change what is in the session history; retrying is pointless.
-  (This exception applies ONLY to session-history tasks, not to web search/research tasks.)
-
+WHEN TO USE RETRY (for off-topic / wrong-result web search steps):
+- DEFAULT TO RETRY for off-topic results on the FIRST attempt (retry_count=0),
+    even if you are not fully confident a new query will help. A reformulated
+    query is almost always worth one try before giving up — FAIL on the first
+    attempt should be rare.
+- If the output is off-topic because the SEARCH QUERY was likely too broad,
+    too narrow, ambiguous, or used the wrong terminology — and a more specific
+    or differently-worded query could plausibly retrieve the right subject —
+    use RETRY, not FAIL.
+- When you choose RETRY, "suggestions" MUST contain a concrete improved
+    search query (e.g. "try query: FastAPI vs Django benchmarks async Python"),
+    not vague advice like "use better keywords".
+- Only use FAIL on the first attempt if the topic is fundamentally unsearchable
+    (e.g. asks about private/internal information, or something that doesn't
+    exist) — not merely because the current result happened to be off-topic.
+- On later attempts (retry_count >= 1), if a reformulated query STILL returns
+    the same or a similarly off-topic result, FAIL is appropriate — repeating
+    near-identical results is a sign that retrying further will not help.
 RESPOND ONLY WITH JSON.
 """
 
-    def __init__(self, model: str = "llama-3.1-8b-instant"):
+    def __init__(self, model: str = "gpt-5-mini"):
         self.model = model
 
     async def evaluate(
@@ -126,7 +144,7 @@ Evaluate if this step succeeded and return verdict JSON.
 """
 
         try:
-            response = await call_groq_with_system(
+            response = await call_openai_with_system(
                 system_prompt=self.SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 model=self.model,
@@ -155,6 +173,16 @@ Evaluate if this step succeeded and return verdict JSON.
 
             reason = evaluation.get("reason", "No reason provided")
             suggestions = evaluation.get("suggestions", "")
+
+            # Safety net: if the model said RETRY but forgot to give a
+            # concrete suggestion, downgrade to FAIL rather than retrying blindly.
+            if verdict == Verdict.RETRY and not suggestions.strip():
+                logger.error(
+                    "critic_retry_missing_suggestions",
+                    reason=reason,
+                )
+                verdict = Verdict.FAIL
+                reason = f"{reason} (RETRY requested without a concrete suggestion; treating as FAIL)"
 
             logger.info(
                 "critic_evaluated",

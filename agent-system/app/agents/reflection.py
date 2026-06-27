@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from app.utils.json_parser import extract_json
 
-from app.utils.llm import call_groq_with_system
+from app.utils.llm import call_openai_with_system
 from app.models.task import Task
 
 logger = structlog.get_logger()
@@ -145,7 +145,7 @@ Failed calculation with retries:
 
 RESPOND ONLY WITH JSON."""
 
-    def __init__(self, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, model: str = "gpt-5-mini"):
         self.model = model
 
     async def reflect(
@@ -215,7 +215,7 @@ Reflect on this task execution:
 Be specific and actionable. Return JSON only."""
 
         try:
-            response = await call_groq_with_system(
+            response = await call_openai_with_system(
                 system_prompt=self.SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 model=self.model,

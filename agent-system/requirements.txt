@@ -6,15 +6,15 @@ uvicorn[standard]==0.42.0
 sqlalchemy==2.0.25
 psycopg[binary]
 alembic==1.18.4
-
+langchain-openai
 # Config
+pydantic-settings>=2.4.0
 pydantic==2.12.5
-pydantic-settings==2.1.0
+
 # Vector Memory
 qdrant-client
-sentence-transformers
 # HTTP
-httpx
+httpx==0.28.1
 python-multipart
 tabulate==0.10.0
 
@@ -32,14 +32,13 @@ openai==1.10.0
 langchain-google-genai
 google-genai
 ddgs
+
 # ML / Embeddings
 scikit-learn==1.8.0
-
+sentence-transformers
+xmltodict
 # Utils
 arxiv
 python-dotenv==1.2.2
 requests==2.32.5
-httpx==0.28.1
-arxiv  # For LangChain ArXiv integration
-ddgs  # For LangChain DuckDuckGo integration (replaces duckduckgo-search)
-wikipedia  # For LangChain Wikipedia integration
+wikipedia

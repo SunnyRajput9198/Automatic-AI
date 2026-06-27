@@ -118,6 +118,7 @@ class ResearcherAgent(BaseAgent):
         Removes action verbs AND filler/connector words that dilute search relevance.
         """
         action_words = [
+            "use web_search to find", "use web_search to search for", "use web_search to",
             "search for", "research", "find", "look up",
             "investigate", "explore", "discover", "learn about",
             "information about", "information on",
@@ -125,7 +126,7 @@ class ResearcherAgent(BaseAgent):
 
         query = task
         for phrase in action_words:
-            query = re.sub(re.escape(phrase), "", query, flags=re.IGNORECASE).strip()
+            query = re.sub(re.escape(phrase), " ", query, flags=re.IGNORECASE).strip()
 
         # Filler/connector words that add noise without adding search signal
         filler_words = [
@@ -133,7 +134,7 @@ class ResearcherAgent(BaseAgent):
             r"\bregarding\b", r"\bconcerning\b",
         ]
         for pattern in filler_words:
-            query = re.sub(pattern, "", query, flags=re.IGNORECASE)
+            query = re.sub(pattern, " ", query, flags=re.IGNORECASE)
 
         # Collapse extra whitespace left behind
         query = re.sub(r"\s+", " ", query).strip()

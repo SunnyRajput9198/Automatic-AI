@@ -1,7 +1,7 @@
 import structlog
 from typing import List, Dict
 from app.utils.json_parser import extract_json
-from app.utils.llm import call_groq_with_system
+from app.utils.llm import call_openai_with_system
 
 logger = structlog.get_logger()
 
@@ -203,7 +203,7 @@ RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
     # already contains all replan rules. No need to duplicate them.
     REPLAN_SYSTEM_PROMPT = SYSTEM_PROMPT
 
-    def __init__(self, model: str = "llama-3.1-8b-instant"):
+    def __init__(self, model: str = "gpt-5-mini"):
         self.model = model
 
     def _validate_steps(self, steps: list, log_key: str) -> List[Dict]:
@@ -234,7 +234,7 @@ Break this down into concrete, executable steps.
 Return JSON only.
 """
         try:
-            response = await call_groq_with_system(
+            response = await call_openai_with_system(
                 system_prompt=self.SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 model=self.model,
@@ -281,7 +281,7 @@ Create a NEW plan that avoids this error.
 Return JSON only.
 """
         try:
-            response = await call_groq_with_system(
+            response = await call_openai_with_system(
                 system_prompt=self.REPLAN_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 model=self.model,
