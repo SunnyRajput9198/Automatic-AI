@@ -16,15 +16,21 @@ class ShellExecutor(Tool):
 
     Security model:
     - Only commands in ALLOWED_COMMANDS can run (checked on the base word).
+    - Command chaining characters are blocked to prevent injection.
+    - Arguments are passed as a list with shell=False — the OS never
+      interprets the command string, eliminating shell injection risk.
     - Execution is capped at 30 seconds.
-    - Working directory is set to the shared workspace so file operations
-    land in the right place.
+    - Working directory is set via the native cwd= param so file operations
+      land in the shared workspace.
     """
 
     ALLOWED_COMMANDS = {
         "ls", "pwd", "cat", "grep", "find", "wc", "head", "tail",
         "echo", "mkdir", "touch", "cp", "mv", "tree", "du", "df",
     }
+
+    # Characters that enable command chaining / injection
+    _DANGEROUS = [";", "&&", "||", "|", "`", "$("]
 
     @property
     def name(self) -> str:
@@ -51,11 +57,9 @@ class ShellExecutor(Tool):
         }
 
     def _is_command_safe(self, command: str) -> bool:
-        # block command chaining characters
-        dangerous_chars = [";", "&&", "||", "|", "`", "$(" ]
-        for char in dangerous_chars:
-            if char in command:
-                return False
+        """Return False if command contains chaining/injection characters."""
+        if any(char in command for char in self._DANGEROUS):
+            return False
         parts = shlex.split(command)
         return bool(parts) and parts[0] in self.ALLOWED_COMMANDS
 
@@ -83,12 +87,12 @@ class ShellExecutor(Tool):
 
         try:
             result = subprocess.run(
-                shlex.split(command),# split the command into a list of arguments
-                shell=False,# tell the subprocess to treat the command as a list of arguments
+                shlex.split(command),   # list of args — shell=False is safe
+                shell=False,            # OS never interprets the string
                 capture_output=True,
                 text=True,
-                timeout=10,
-                cwd=shared_workspace,
+                timeout=30,             # bumped from 10s — find/du can be slow
+                cwd=shared_workspace,   # guaranteed cwd, no cd-chain workaround
             )
 
             if result.returncode == 0:
@@ -108,11 +112,11 @@ class ShellExecutor(Tool):
                 )
 
         except subprocess.TimeoutExpired:
-            logger.error("shell_executor_timeout")
+            logger.error("shell_executor_timeout", command=command)
             return ToolResult(
                 success=False,
                 output="",
-                error="Command timed out after 10 seconds",
+                error="Command timed out after 30 seconds",
             )
 
         except Exception as e:

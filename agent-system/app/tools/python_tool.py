@@ -1,35 +1,27 @@
-import subprocess
-import os
-import tempfile
+from RestrictedPython import compile_restricted, safe_builtins, utility_builtins
+from app.tools.base import Tool, ToolResult
 import structlog
 from typing import Dict, Any
 
-from app.core.config import settings
-from app.tools.base import Tool, ToolResult
-
 logger = structlog.get_logger()
 
-
-class PythonExecutor(Tool):
+class RestrictedPythonExecutor(Tool):
     """
-    Execute Python code in an isolated subprocess.
+    Execute Python code safely using RestrictedPython.
 
     SECURITY:
-    - Runs in isolated subprocess
-    - Timeout protection (10 seconds)
-    - Working directory set to shared workspace for file persistence
+    - Blocks dangerous builtins (file I/O, subprocess, etc.)
+    - Provides controlled globals
+    - Faster than subprocess since it runs inline
     """
 
     @property
     def name(self) -> str:
-        return "python_executor"
+        return "restricted_python_executor"
 
     @property
     def description(self) -> str:
-        return (
-            "Execute Python code in a sandbox. Files created will persist in shared "
-            "workspace. Use for data processing, calculations, file operations, etc."
-        )
+        return "Execute Python code safely using RestrictedPython sandbox."
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -42,67 +34,37 @@ class PythonExecutor(Tool):
         }
 
     async def run(self, **kwargs) -> ToolResult:
-        """Execute Python code safely."""
         code = kwargs.get("code", "")
-
         if not code.strip():
             return ToolResult(success=False, output="", error="No code provided")
 
-        logger.info("python_executor_running", code_length=len(code))
+        logger.info("restricted_python_executor_running", code_length=len(code))
 
-        shared_workspace = settings.SHARED_WORKSPACE
-        os.makedirs(shared_workspace, exist_ok=True)
-
-        sandbox_dir = settings.SANDBOX_DIR
-        os.makedirs(sandbox_dir, exist_ok=True)
-
-        temp_file = ""
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", dir=sandbox_dir, delete=False
-            ) as f:
-                f.write(code)
-                temp_file = f.name
+            # Compile code in restricted mode
+            byte_code = compile_restricted(code, filename="<inline>", mode="exec")
 
-            result = subprocess.run(
-                ["python", temp_file],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                cwd=shared_workspace,
-            )
+            # Safe globals
+            safe_globals = {
+                "__builtins__": safe_builtins | utility_builtins,
+                "_print_": lambda *args: " ".join(map(str, args)),  # capture print
+                "_getattr_": getattr,
+                "_setattr_": setattr,
+                "_getitem_": lambda obj, key: obj[key],
+                "_setitem_": lambda obj, key, value: obj.__setitem__(key, value),
+            }
 
-            if result.returncode == 0:
-                logger.info("python_executor_success", output_length=len(result.stdout))
-                return ToolResult(
-                    success=True,
-                    output=result.stdout,
-                    metadata={"return_code": 0, "working_dir": shared_workspace},
-                )
-            else:
-                logger.warning("python_executor_failed", error=result.stderr)
-                return ToolResult(
-                    success=False,
-                    output=result.stdout,
-                    error=result.stderr,
-                    metadata={"return_code": result.returncode},
-                )
+            # Capture output
+            output_buffer = []
+            safe_globals["_print_"] = lambda *args: output_buffer.append(" ".join(map(str, args)))
 
-        except subprocess.TimeoutExpired:
-            logger.error("python_executor_timeout")
-            return ToolResult(
-                success=False, output="", error="Execution timed out after 10 seconds"
-            )
+            exec(byte_code, safe_globals)
+
+            result_output = "\n".join(output_buffer)
+            logger.info("restricted_python_executor_success", output_length=len(result_output))
+
+            return ToolResult(success=True, output=result_output, metadata={"sandbox": "RestrictedPython"})
 
         except Exception as e:
-            logger.error("python_executor_error", error=str(e))
-            return ToolResult(
-                success=False, output="", error=f"Execution error: {str(e)}"
-            )
-
-        finally:
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.unlink(temp_file)
-                except OSError:
-                    pass
+            logger.error("restricted_python_executor_error", error=str(e))
+            return ToolResult(success=False, output="", error=f"Execution error: {str(e)}")

@@ -82,5 +82,17 @@
     "feedback": "good",
     "answer": "Successfully wrote 11 characters to fibonacci_50.txt",
     "created_at": "2026-06-27T18:40:03.129574+00:00"
+  },
+  {
+    "query": "what is ml and how it is differtn from ai and tell em what is the current temp in canada\n",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-28T17:57:48.976320+00:00"
+  },
+  {
+    "query": "current laatest new in ai",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-28T18:15:11.418325+00:00"
   }
 ]

@@ -1,34 +1,291 @@
-from app.tools.base import Tool, ToolResult
-import wikipedia
-import json
 import asyncio
 import structlog
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
+
 import httpx
-import arxiv as arxiv_lib
-from langchain_community.utilities import (
-    DuckDuckGoSearchAPIWrapper,
-    PubMedAPIWrapper,
-    WikipediaAPIWrapper
-)
-wikipedia.set_rate_limiting(True)
+from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
+
+from app.tools.base import Tool, ToolResult
+
 logger = structlog.get_logger()
 
 
-class WebSearchTool(Tool):
-    """Multi-source web search using LangChain wrappers"""
+# ---------------------------------------------------------------------------
+# HTTP layer — pure data-fetching, no Tool coupling
+# ---------------------------------------------------------------------------
+
+class _SemanticScholarAPI:
+    BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+    FIELDS   = "title,abstract,authors,citationCount,url,externalIds"
+
+    async def search(self, query: str, limit: int = 3) -> List[dict]:
+        params = {"query": query, "limit": limit, "fields": self.FIELDS}
+        try:
+            async with httpx.AsyncClient(
+                timeout=10, headers={"User-Agent": "ResearchAgent/1.0"}
+            ) as client:
+                resp = await client.get(self.BASE_URL, params=params)
+                if resp.status_code != 200:
+                    logger.warning("semantic_scholar_http_error", status=resp.status_code)
+                    return []
+
+                papers = []
+                for p in resp.json().get("data", []):
+                    authors = ", ".join(a.get("name", "") for a in (p.get("authors") or []))
+                    url = p.get("url") or ""
+                    if not url and p.get("paperId"):
+                        url = f"https://www.semanticscholar.org/paper/{p['paperId']}"
+                    papers.append({
+                        "source":         "Semantic Scholar",
+                        "title":          p.get("title", ""),
+                        "content":        (p.get("abstract") or "")[:500],
+                        "authors":        authors,
+                        "citation_count": p.get("citationCount", 0),
+                        "url":            url,
+                    })
+                return papers
+        except Exception as e:
+            logger.error("semantic_scholar_error", error=str(e), query=query)
+            return []
+
+
+class _WikipediaRESTAPI:
+    SEARCH_URL  = "https://en.wikipedia.org/w/api.php"
+    SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
+
+    async def search(self, query: str) -> List[dict]:
+        try:
+            async with httpx.AsyncClient(
+                timeout=10, headers={"User-Agent": "ResearchAgent/1.0"}
+            ) as client:
+                # Step 1: find best matching title
+                search_resp = await client.get(self.SEARCH_URL, params={
+                    "action": "query", "list": "search",
+                    "srsearch": query, "srlimit": 1, "format": "json",
+                })
+                if search_resp.status_code != 200:
+                    return []
+
+                hits = search_resp.json().get("query", {}).get("search", [])
+                if not hits:
+                    return []
+
+                title = hits[0]["title"]
+
+                # Step 2: fetch page summary
+                summary_resp = await client.get(
+                    self.SUMMARY_URL.format(title=title.replace(" ", "_"))
+                )
+                if summary_resp.status_code != 200:
+                    return []
+
+                page = summary_resp.json()
+                canonical_url = (
+                    page.get("content_urls", {}).get("desktop", {}).get("page", "")
+                    or f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                )
+                return [{
+                    "source":  "Wikipedia",
+                    "title":   page.get("title", title),
+                    "content": (page.get("extract") or "")[:500],
+                    "url":     canonical_url,
+                }]
+        except Exception as e:
+            logger.error("wikipedia_rest_error", error=str(e), query=query)
+            return []
+
+
+# ---------------------------------------------------------------------------
+# Standalone bound tools — LLM can call each independently
+# ---------------------------------------------------------------------------
+
+class SemanticScholarTool(Tool):
+    """
+    Search Semantic Scholar for academic papers.
+    Use this for queries about research papers, ML models, algorithms,
+    benchmarks, authors, or any academic/scientific topic.
+    """
 
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=10, headers={"User-Agent": "ResearchAgent/1.0"})
-        self.wiki_wrapper = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=500)# type: ignore
-        self.arxiv_client = arxiv_lib.Client()
-        self.ddg_wrapper = DuckDuckGoSearchAPIWrapper(
+        self._api = _SemanticScholarAPI()
+
+    @property
+    def name(self) -> str:
+        return "semantic_scholar_search"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Search Semantic Scholar for academic papers. "
+            "Returns title, abstract, authors, citation count, and URL. "
+            "Best for: research papers, ML models, algorithms, scientific studies."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Academic search query (e.g. 'attention mechanism transformer')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of papers to return (default: 3, max: 10)",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
+        }
+
+    async def run(self, **kwargs) -> ToolResult:
+        query: str = kwargs.get("query", "")
+        limit: int = min(kwargs.get("limit", 3), 10)
+
+        if not query.strip():
+            return ToolResult(success=False, output="", error="Query is required")
+
+        logger.info("semantic_scholar_search_running", query=query, limit=limit)
+
+        papers = await self._api.search(query, limit=limit)
+
+        if not papers:
+            return ToolResult(
+                success=False, output="", error="No papers found",
+                metadata={"query": query, "num_results": 0},
+            )
+
+        formatted = []
+        for i, p in enumerate(papers, 1):
+            formatted.append(
+                f"{i}. [Semantic Scholar] {p['title']}\n"
+                f"   {p['content']}\n"
+                f"   Authors: {p['authors']}  |  Citations: {p['citation_count']}\n"
+                f"   URL: {p['url']}"
+            )
+
+        logger.info("semantic_scholar_search_completed", num_results=len(papers))
+        return ToolResult(
+            success=True,
+            output="\n\n".join(formatted),
+            metadata={
+                "tool_name":   "semantic_scholar_search",
+                "query":       query,
+                "num_results": len(papers),
+                "sources":     ["Semantic Scholar"],
+            },
+        )
+
+
+class WikipediaTool(Tool):
+    """
+    Look up a topic on Wikipedia using the REST API.
+    Use this for factual, encyclopedic, or general-knowledge queries.
+    """
+
+    def __init__(self):
+        self._api = _WikipediaRESTAPI()
+
+    @property
+    def name(self) -> str:
+        return "wikipedia_search"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Search Wikipedia for a topic. "
+            "Returns the page title, a concise summary, and the canonical URL. "
+            "Best for: factual lookups, definitions, historical context, general knowledge."
+        )
+
+    @property
+    def input_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Topic or question to look up on Wikipedia",
+                },
+            },
+            "required": ["query"],
+        }
+
+    async def run(self, **kwargs) -> ToolResult:
+        query: str = kwargs.get("query", "")
+
+        if not query.strip():
+            return ToolResult(success=False, output="", error="Query is required")
+
+        logger.info("wikipedia_search_running", query=query)
+
+        results = await self._api.search(query)
+
+        if not results:
+            return ToolResult(
+                success=False, output="", error="No Wikipedia article found",
+                metadata={"query": query, "num_results": 0},
+            )
+
+        p = results[0]
+        output = (
+            f"1. [Wikipedia] {p['title']}\n"
+            f"   {p['content']}\n"
+            f"   URL: {p['url']}"
+        )
+
+        logger.info("wikipedia_search_completed", title=p["title"])
+        return ToolResult(
+            success=True,
+            output=output,
+            metadata={
+                "tool_name":   "wikipedia_search",
+                "query":       query,
+                "num_results": 1,
+                "sources":     ["Wikipedia"],
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# WebSearchTool — combined fallback for ambiguous / general queries
+# Delegates internally to the same API layer; LLM should prefer the
+# specific tools above when the query type is clear.
+# ---------------------------------------------------------------------------
+
+class WebSearchTool(Tool):
+    """
+    Multi-source web search combining Semantic Scholar, Wikipedia, and DuckDuckGo.
+    Use this when the query type is ambiguous or you want broad coverage.
+    For academic queries prefer semantic_scholar_search.
+    For factual lookups prefer wikipedia_search.
+    """
+
+    _ACADEMIC_KW = [
+        "neural network", "algorithm", "paper", "model", "architecture",
+        "theorem", "proof", "dataset", "benchmark", "method", "approach",
+        "deep learning", "machine learning", "research", "study",
+        "transformer", "attention mechanism", "gradient", "optimization",
+        "loss function", "embedding", "inference", "training",
+    ]
+    _PRODUCT_KW = [
+        "fastapi", "django", "flask", "react", "vue", "angular",
+        "docker", "kubernetes", "asyncio", "nodejs", "express",
+        "postgresql", "mongodb", "redis", "graphql", "rest api",
+        "next.js", "svelte", "tailwind",
+    ]
+    _TECHNICAL_KW = [
+        "implementation", "how to", "tutorial", "example", "code",
+        "library", "framework", "api", "sdk", "install", "configure",
+    ]
+
+    def __init__(self):
+        self._ss  = _SemanticScholarAPI()
+        self._wiki = _WikipediaRESTAPI()
+        self._ddg  = DuckDuckGoSearchAPIWrapper(
             region="wt-wt", safesearch="moderate", time="y", max_results=5
         )
-        self.pubmed_wrapper = PubMedAPIWrapper(top_k_results=3, doc_content_chars_max=500) # type: ignore
-
-    async def close(self):
-        await self.client.aclose()
 
     @property
     def name(self) -> str:
@@ -36,7 +293,12 @@ class WebSearchTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Search the web from Wikipedia, ArXiv, PubMed, and DuckDuckGo"
+        return (
+            "Broad web search across Semantic Scholar, Wikipedia, and DuckDuckGo. "
+            "Use for ambiguous or general queries. "
+            "For academic papers use semantic_scholar_search. "
+            "For factual lookups use wikipedia_search."
+        )
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -44,192 +306,100 @@ class WebSearchTool(Tool):
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
-                "max_results": {"type": "integer", "description": "Max results (default: 5)", "default": 5},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max results to return (default: 5)",
+                    "default": 5,
+                },
             },
             "required": ["query"],
         }
 
-    def _is_technical_query(self, query: str) -> bool:
-        """Determine if query needs all sources or just Wikipedia"""
-        general_kw = ["what is", "who is", "explain", "define"]
-        technical_kw = ["research", "paper", "algorithm", "implementation", "arxiv"]
-        
-        q = query.lower()
-        if any(kw in q for kw in technical_kw):
-            return True
-        if any(kw in q for kw in general_kw):
+    def _is_academic(self, q: str) -> bool:
+        if any(kw in q for kw in self._PRODUCT_KW):
             return False
-        return True
-    def _is_academic_query(self, query: str) -> bool:
-        """
-        ArXiv only returns good results for genuine research-paper-style queries.
-        Skip ArXiv for product/framework/library names — it just returns noise.
-        """
-        academic_kw = [
-            "neural network", "algorithm", "paper", "model", "architecture",
-            "theorem", "proof", "dataset", "benchmark", "method", "approach",
-            "deep learning", "machine learning", "research", "study",
-        ]
-        # Known product/framework names that should NEVER trigger ArXiv
-        product_kw = [
-            "fastapi", "django", "flask", "react", "vue", "angular",
-            "docker", "kubernetes", "asyncio", "nodejs", "express",
-            "postgresql", "mongodb", "redis", "graphql", "rest api",
-        ]
+        return any(kw in q for kw in self._ACADEMIC_KW)
 
-        q = query.lower()
+    def _is_technical(self, q: str) -> bool:
+        return any(kw in q for kw in self._TECHNICAL_KW + self._ACADEMIC_KW)
 
-        if any(kw in q for kw in product_kw):
-            return False
-
-        return any(kw in q for kw in academic_kw)
-    async def _wiki_search(self, query: str) -> list[dict]:
-        for attempt in range(2):
-            try:
-                results = await asyncio.to_thread(self.wiki_wrapper.run, query)
-                if not results or len(results.strip()) < 10:
-                    return []
-                lines = results.split("\n", 1)
-                title = lines[0].strip() if len(lines) > 1 and len(lines[0]) < 100 else query
-                content = lines[1].strip() if len(lines) > 1 else results
-                url = f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
-                return [{"source": "Wikipedia", "title": title, "content": content[:500], "url": url}]
-            except Exception as e:
-                if attempt == 0:
-                    await asyncio.sleep(1)
-                    continue
-                logger.error("wiki_search_error", error=str(e))
-                return []
-        return []
-    async def _arxiv_search(self, query: str) -> list[dict]:
+    async def _ddg_search(self, query: str) -> List[dict]:
         try:
-            def fetch():
-                search = arxiv_lib.Search(query=query, max_results=3)
-                return list(self.arxiv_client.results(search))
-
-            results = await asyncio.to_thread(fetch)
-            papers = []
-            for paper in results:
-                papers.append({
-                    "source": "ArXiv",
-                    "title": paper.title,
-                    "content": paper.summary[:500],
-                    "url": paper.entry_id,
-                })
-            return papers
-        except Exception as e:
-            logger.error("arxiv_search_error", error=str(e))
-            return []
-
-    async def _pubmed_search(self, query: str) -> list[dict]:
-        try:
-            results = await asyncio.to_thread(self.pubmed_wrapper.run, query)
-            papers = []
-
-            for entry in results.split("\n\n"):
-                if not entry.strip():
-                    continue
-                title, summary, url = "", "", ""
-                for line in entry.split("\n"):
-                    if line.startswith("Title:"):
-                        title = line.replace("Title:", "").strip()
-                    elif line.startswith("Summary:"):
-                        summary = line.replace("Summary:", "").strip()
-                    elif "pubmed.ncbi.nlm.nih.gov" in line.lower():
-                        url = line.replace("URL:", "").strip()
-
-                # Fallback: build URL from any 7-9 digit PubMed ID found in entry
-                if title and not url:
-                    import re as _re
-                    id_match = _re.search(r'\b(\d{7,9})\b', entry)
-                    if id_match:
-                        url = f"https://pubmed.ncbi.nlm.nih.gov/{id_match.group(1)}/"
-
-                if title:
-                    papers.append({
-                        "source": "PubMed",
-                        "title": title,
-                        "content": summary[:500],
-                        "url": url
-                    })
-
-            return papers
-        except Exception as e:
-            logger.error("pubmed_search_error", error=str(e))
-            return []
-
-    async def _duckduckgo_search(self, query: str) -> list[dict]:
-        try:
-            results_list = await asyncio.to_thread(self.ddg_wrapper.results, query, max_results=5)
-            return [
-                {"source": "DuckDuckGo", "title": item.get("title", ""),
-                "content": item.get("snippet", "")[:500], "url": item.get("link", "")}
-                for item in results_list
-            ]
+            items = await asyncio.to_thread(self._ddg.results, query, max_results=5)
+            return [{
+                "source":  "DuckDuckGo",
+                "title":   i.get("title", ""),
+                "content": i.get("snippet", "")[:500],
+                "url":     i.get("link", ""),
+            } for i in items]
         except Exception as e:
             logger.error("duckduckgo_search_error", error=str(e))
             return []
 
     async def run(self, **kwargs) -> ToolResult:
-        query = kwargs.get("query", "")
-        max_results = kwargs.get("max_results", 5)
+        query: str    = kwargs.get("query", "")
+        max_results: int = kwargs.get("max_results", 5)
 
-        if not query:
+        if not query.strip():
             return ToolResult(success=False, output="", error="Search query is required")
 
         logger.info("web_search_running", query=query)
+        q = query.lower()
 
         try:
-            is_technical = self._is_technical_query(query)
-            is_academic  = self._is_academic_query(query)
-
-            if is_technical:
-                tasks = [
-                    self._wiki_search(query),
-                    self._pubmed_search(query),
-                    self._duckduckgo_search(query),
-                ]
-                if is_academic:
-                    tasks.insert(1, self._arxiv_search(query))  # only add ArXiv if relevant
-                else:
-                    logger.info("web_search_skip_arxiv", query=query, reason="not academic-style")
-
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                sources = [item for result in results if isinstance(result, list) for item in result]
-            else:
-                # General query — Wikipedia + DuckDuckGo in parallel
-                wiki_results, ddg_results = await asyncio.gather(
-                    self._wiki_search(query),
-                    self._duckduckgo_search(query),
+            if self._is_academic(q) or self._is_technical(q):
+                strategy = "semantic_scholar+wikipedia+duckduckgo"
+                results = await asyncio.gather(
+                    self._ss.search(query),
+                    self._wiki.search(query),
+                    self._ddg_search(query),
                     return_exceptions=True,
                 )
-                sources = []
-                if isinstance(wiki_results, list):
-                    sources.extend(wiki_results)
-                if isinstance(ddg_results, list):
-                    sources.extend(ddg_results)
+            else:
+                strategy = "wikipedia+duckduckgo"
+                results = await asyncio.gather(
+                    self._wiki.search(query),
+                    self._ddg_search(query),
+                    return_exceptions=True,
+                )
+
+            logger.info("web_search_strategy", strategy=strategy)
+
+            sources: List[dict] = [
+                item for r in results if isinstance(r, list) for item in r
+            ]
 
             if not sources:
                 return ToolResult(
                     success=False, output="", error="No results found",
-                    metadata={"query": query, "num_results": 0}
+                    metadata={"query": query, "num_results": 0},
                 )
 
-            formatted = [
-                f"{i}. {s['source']} — {s['title']}\n   {s['content'][:500]}\n   URL: {s['url']}"
-                for i, s in enumerate(sources[:max_results], 1)
-            ]
+            formatted = []
+            for i, s in enumerate(sources[:max_results], 1):
+                extra = ""
+                if s.get("authors"):
+                    extra += f"\n   Authors: {s['authors']}"
+                if s["source"] == "Semantic Scholar":
+                    extra += f"  |  Citations: {s.get('citation_count', 0)}"
+                formatted.append(
+                    f"{i}. [{s['source']}] {s['title']}\n"
+                    f"   {s.get('content', '')[:500]}"
+                    f"{extra}\n"
+                    f"   URL: {s.get('url', '')}"
+                )
 
-            logger.info("web_search_completed", num_results=len(sources))
+            source_names = list({s["source"] for s in sources})
+            logger.info("web_search_completed", num_results=len(sources), sources=source_names)
 
             return ToolResult(
                 success=True,
                 output="\n\n".join(formatted),
                 metadata={
-                    "tool_name": "web_search",
-                    "query": query,
+                    "tool_name":   "web_search",
+                    "query":       query,
                     "num_results": len(sources),
-                    "source": "wikipedia+arxiv+pubmed+duckduckgo" if is_technical else "wikipedia"
+                    "sources":     source_names,
                 },
             )
 
@@ -238,8 +408,12 @@ class WebSearchTool(Tool):
             return ToolResult(success=False, output="", error=f"Search failed: {str(e)}")
 
 
+# ---------------------------------------------------------------------------
+# WebFetchTool — unchanged
+# ---------------------------------------------------------------------------
+
 class WebFetchTool(Tool):
-    """Fetch content from a URL"""
+    """Fetch text content from a URL (HTTPS only)."""
 
     BLOCKED_DOMAINS = ["localhost", "127.0.0.1", "0.0.0.0", "internal", "private"]
 
@@ -260,44 +434,37 @@ class WebFetchTool(Tool):
         }
 
     async def run(self, **kwargs) -> ToolResult:
-        url = kwargs.get("url", "")
+        url: str = kwargs.get("url", "")
 
         if not url:
             return ToolResult(success=False, output="", error="URL is required")
-
         if not url.startswith(("https://", "http://")):
             return ToolResult(success=False, output="", error="URL must start with http:// or https://")
-
-        if any(blocked in url.lower() for blocked in self.BLOCKED_DOMAINS):
+        if any(b in url.lower() for b in self.BLOCKED_DOMAINS):
             return ToolResult(success=False, output="", error="Access to internal domains not allowed")
 
         logger.info("web_fetch_running", url=url)
 
         try:
             async with httpx.AsyncClient(
-                timeout=15.0,
-                follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0"}
+                timeout=15.0, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}
             ) as client:
-                response = await client.get(url)
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return ToolResult(success=False, output="", error=f"HTTP {resp.status_code}")
 
-                if response.status_code != 200:
-                    return ToolResult(success=False, output="", error=f"HTTP {response.status_code}")
-
-                content = response.text[:50000]
+                content = resp.text[:50000]
                 logger.info("web_fetch_completed", url=url, size=len(content))
-
                 return ToolResult(
                     success=True,
                     output=content,
                     metadata={
-                        "tool_name": "web_fetch",
-                        "url": url,
-                        "status_code": response.status_code,
-                        "size": len(content),
+                        "tool_name":   "web_fetch",
+                        "url":         url,
+                        "status_code": resp.status_code,
+                        "size":        len(content),
                     },
                 )
-
         except Exception as e:
             logger.error("web_fetch_error", error=str(e), url=url)
             return ToolResult(success=False, output="", error=f"Fetch failed: {str(e)}")

@@ -34,7 +34,7 @@ EXECUTION MODES:
 - sequential: agents run one after another, passing context forward
 
 AGENTS SUPPORTED:
-- researcher: web research via Wikipedia + ArXiv
+- researcher: web research via Semantic Scholar + Wikipedia REST + DuckDuckGo
 - engineer: Python execution, file operations
 - writer: content generation
 """

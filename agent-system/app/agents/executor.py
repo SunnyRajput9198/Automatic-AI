@@ -2,10 +2,10 @@ import json
 import structlog
 from typing import Dict, Any, Optional
 from app.utils.json_parser import extract_json
-from app.utils.llm import call_llm_with_system, call_openai_with_system
+from app.utils.llm import call_llm_with_system, call_openai_with_system, call_openai_with_tools
 from app.utils.file_manager import FileManager
 from app.tools.base import Tool, ToolResult
-from app.tools.python_tool import PythonExecutor
+from app.tools.python_tool import RestrictedPythonExecutor
 from app.tools.shell_tool import ShellExecutor
 from app.tools.file_tools import (
     FileReadTool,
@@ -13,7 +13,12 @@ from app.tools.file_tools import (
     FileListTool,
     FileDeleteTool,
 )
-from app.tools.web_search import WebSearchTool, WebFetchTool
+from app.tools.web_search import (
+    WebSearchTool,
+    WebFetchTool,
+    SemanticScholarTool,
+    WikipediaTool,
+)
 from app.core.config import settings
 
 # This file answers: "Which tool should I use, and what exactly should I pass to it?"
@@ -75,7 +80,7 @@ RESPOND ONLY WITH VALID JSON.
         self.file_manager = FileManager(base_dir=settings.WORKSPACE_DIR)
 
         if settings.ENABLE_PYTHON_EXECUTOR:
-            self._register_tool(PythonExecutor())
+            self._register_tool(RestrictedPythonExecutor())
 
         if settings.ENABLE_SHELL:
             self._register_tool(ShellExecutor())
@@ -87,6 +92,8 @@ RESPOND ONLY WITH VALID JSON.
         self._register_tool(FileDeleteTool(self.file_manager))
         self._register_tool(WebSearchTool())
         self._register_tool(WebFetchTool())
+        self._register_tool(SemanticScholarTool())
+        self._register_tool(WikipediaTool())
 
     def _register_tool(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
@@ -286,104 +293,121 @@ Use bullet points if appropriate.
             )
 
     # ------------------------------------------------------------------
-    # Private: LLM-based tool selection
+    # Private: LLM-based tool selection via real tool binding
     # ------------------------------------------------------------------
+
+    def _build_tool_schemas(self, avoid_tools: list) -> list:
+        """Convert registered tools to OpenAI function schemas, excluding avoided tools."""
+        return [
+            tool.to_openai_schema()
+            for name, tool in self.tools.items()
+            if name not in avoid_tools
+        ]
 
     async def _choose_tool(
         self, instruction: str, context: Dict[str, Any]
     ) -> Optional[Dict]:
         """
-        Ask the LLM to pick the right tool and generate its inputs.
-        Returns the parsed JSON decision dict, or None on failure.
+        Use OpenAI tool binding to pick the right tool and generate typed inputs.
 
-        FIX: This was previously nested *inside* execute_step as an inner
-        function, making it unreachable as a proper class method. The
-        try/except block containing the actual call_llm call was also
-        indented outside both methods entirely.
+        The LLM receives tool schemas via the `tools=` API parameter and responds
+        with a structured `tool_calls` object — no free-text JSON parsing needed.
+
+        Falls back to the old extract_json path if the model returns plain text
+        (e.g. when forced_tool is set or the model declines to call a tool).
         """
-        tools_desc = self._get_tools_description()
-        system_prompt = self.SYSTEM_PROMPT.replace("{tools_description}", tools_desc)
-
-        context_str = ""
+        avoid_tools    = context.get("avoid_tools", [])
+        forced_tool    = context.get("forced_tool")
         preferred_tools = context.get("preferred_tools", [])
+
+        # Build tool schemas for binding (exclude avoided tools)
+        tool_schemas = self._build_tool_schemas(avoid_tools)
+
+        # Build context string for the user prompt
+        context_str = ""
         if context:
-            # Limit context size to prevent recursion issues
             safe_context = {
-                k: v
-                for k, v in context.items()
-                if k
-                in [
-                    "task_description",
-                    "should_search",
-                    "avoid_tools",
-                    "forced_tool",
-                    "step_1_output",
-                    "step_2_output",
-                    "step_3_output",
-                    "week4_output",
+                k: v for k, v in context.items()
+                if k in [
+                    "task_description", "should_search", "avoid_tools",
+                    "forced_tool", "step_1_output", "step_2_output",
+                    "step_3_output", "week4_output",
                 ]
             }
-            # Add session history summary if present
             if "session_history" in context:
                 safe_context["session_history"] = str(context["session_history"])[:300]
             context_str = "\n\nCONTEXT FROM PREVIOUS STEPS:\n" + json.dumps(
                 safe_context, indent=2, default=str
             )
+
         preferred_tools_text = ""
-
         if preferred_tools:
-            preferred_tools_text = f"""
-        Historically successful tools:
-        {", ".join(preferred_tools)}
+            preferred_tools_text = (
+                f"Historically successful tools: {', '.join(preferred_tools)}\n"
+                "Prefer these tools when appropriate.\n\n"
+            )
 
-        Prefer these tools when appropriate.
-        Do not force them if another tool is clearly better.
-        """
-        user_prompt = (
-            f"{preferred_tools_text}\n\n"
-            f"STEP INSTRUCTION:\n\n{instruction}{context_str}\n\n"
-            "Choose the appropriate tool and generate EXECUTABLE inputs (not instruction text).\n"
-            "For python_executor, generate actual Python code.\n"
-            "For shell_executor, generate actual shell commands.\n"
-            "For file_* tools, use appropriate filenames and content.\n"
-            "For web_* tools, use proper queries or URLs.\n"
-            "Return JSON only."
+        system_prompt = (
+            "You are a precise tool execution agent. "
+            "Select the most appropriate tool for the given instruction and provide "
+            "the exact executable inputs required.\n\n"
+            "TOOL SELECTION GUIDE:\n"
+            "- semantic_scholar_search → research papers, ML models, algorithms, academic topics\n"
+            "- wikipedia_search        → factual lookups, definitions, general knowledge\n"
+            "- web_search              → ambiguous or broad queries needing multiple sources\n"
+            "- web_fetch               → fetch content from a specific known URL\n"
+            "- python_executor         → run executable Python code (provide actual code, not description)\n"
+            "- shell_executor          → whitelisted shell commands\n"
+            "- file_read/write/list/delete → workspace file operations\n\n"
+            "IMPORTANT: For python_executor the 'code' input must be actual executable Python, "
+            "not a description of what to do."
         )
 
-        if context.get("forced_tool"):
-            user_prompt += f"\n\nYOU MUST USE TOOL: {context['forced_tool']}"
+        user_prompt = (
+            f"{preferred_tools_text}"
+            f"INSTRUCTION:\n{instruction}"
+            f"{context_str}"
+        )
 
-        if context.get("avoid_tools"):
-            user_prompt += f"\n\nDO NOT USE THESE TOOLS: {context['avoid_tools']}"
+        if forced_tool:
+            user_prompt += f"\n\nYOU MUST USE TOOL: {forced_tool}"
+        if avoid_tools:
+            user_prompt += f"\n\nDO NOT USE THESE TOOLS: {avoid_tools}"
 
         try:
-            response = await call_openai_with_system(
+            result = await call_openai_with_tools(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
+                tools=tool_schemas,
                 model=self.model,
                 temperature=0.1,
                 max_tokens=4000,
             )
 
-            response_text = response.strip()
-
-            # extract_json handles markdown fences internally
-            decision = extract_json(response_text, context="executor")
-            if not decision:
-                logger.error(
-                    "executor_json_extraction_failed",
-                    response_preview=response_text[:200],
+            if result["type"] == "tool_call":
+                # Structured response — tool name and typed arguments guaranteed
+                logger.info(
+                    "executor_tool_binding_success",
+                    tool=result["name"],
+                    args_keys=list(result["arguments"].keys()),
                 )
-                return None
+                return {
+                    "tool":      result["name"],
+                    "inputs":    result["arguments"],
+                    "reasoning": "selected via tool binding",
+                }
 
-            logger.debug(
-                "executor_tool_decision",
-                tool=decision.get("tool"),
-                inputs_preview={
-                    k: str(v)[:100] for k, v in decision.get("inputs", {}).items()
-                },
+            # Model returned plain text — fall back to JSON extraction
+            logger.warning(
+                "executor_tool_binding_text_fallback",
+                preview=result["content"][:200],
             )
-            return decision
+            decision = extract_json(result["content"], context="executor")
+            if decision:
+                return decision
+
+            logger.error("executor_tool_binding_fallback_failed")
+            return None
 
         except Exception as e:
             logger.error("executor_choice_error", error=str(e))

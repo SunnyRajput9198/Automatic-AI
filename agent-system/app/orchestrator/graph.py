@@ -46,11 +46,6 @@ CriticAgent     = _critic.CriticAgent
 Verdict         = _critic.Verdict
 PlannerAgent    = _plan.PlannerAgent
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared state schema
-# ─────────────────────────────────────────────────────────────────────────────
-
 class AgentState(TypedDict):
     # ── Input ──────────────────────────────────────────────────────────────
     task:           str

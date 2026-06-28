@@ -8,7 +8,7 @@ from app.utils.llm import call_llm_with_system
 from app.utils.file_manager import FileManager
 from app.utils.json_parser import extract_json
 from app.core.config import settings
-from app.tools.python_tool import PythonExecutor
+from app.tools.python_tool import RestrictedPythonExecutor
 from app.tools.shell_tool import ShellExecutor
 from app.tools.file_tools import (
     FileReadTool, FileWriteTool, FileListTool, FileDeleteTool
@@ -76,7 +76,7 @@ RESPOND ONLY WITH JSON."""
         # Initialise real tools
         fm = FileManager(base_dir=settings.WORKSPACE_DIR)
         self._tools: Dict[str, Any] = {
-            "python_executor": PythonExecutor(),
+            "python_executor": RestrictedPythonExecutor(),
             "shell_executor":  ShellExecutor(),
             "file_read":       FileReadTool(fm),
             "file_write":      FileWriteTool(fm),

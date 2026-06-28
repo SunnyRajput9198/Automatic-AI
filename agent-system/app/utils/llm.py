@@ -6,13 +6,13 @@ import asyncio
 import structlog
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-from langchain_anthropic import ChatAnthropic  # add at top, remove anthropic imports
+from langchain_anthropic import ChatAnthropic 
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = structlog.get_logger()
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"  # Best balance for agents
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"  
 
 
 # -------------------------------
@@ -235,3 +235,94 @@ async def call_openai_with_system(
         temperature=temperature,
         max_tokens=max_tokens,
     )
+
+
+# -------------------------------
+# OpenAI Tool Binding
+# -------------------------------
+
+def _sync_openai_call_with_tools(
+    messages: List[Dict[str, str]],
+    tools: List[Dict],
+    model: str,
+    temperature: float,
+    max_tokens: int,
+) -> Dict:
+    """
+    Call OpenAI with tool schemas bound via the `tools=` parameter.
+    Returns a dict with either:
+      - {"type": "tool_call", "name": ..., "arguments": {...}}  — LLM chose a tool
+      - {"type": "text", "content": ...}                        — LLM returned plain text
+    """
+    if not _openai_api_key:
+        raise RuntimeError("OpenAI client not initialized - OPENAI_API_KEY missing")
+
+    from langchain_core.messages import ToolCall
+    from langchain_core.messages import AIMessage as LCAIMessage
+
+    llm = ChatOpenAI(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,  # type: ignore
+        api_key=_openai_api_key,
+        base_url="https://aicredits.in/v1",
+    )
+
+    # Bind tools so OpenAI returns structured tool_calls
+    llm_with_tools = llm.bind_tools(tools)
+    lc_messages = _build_langchain_messages(messages)
+    response: LCAIMessage = llm_with_tools.invoke(lc_messages)  # type: ignore
+
+    # Check if the model issued a tool call
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        tc = response.tool_calls[0]
+        return {
+            "type":      "tool_call",
+            "name":      tc["name"],
+            "arguments": tc["args"],   # already a dict, no JSON parsing needed
+        }
+
+    # Fallback: model returned plain text
+    return {"type": "text", "content": str(response.content)}
+
+
+async def call_openai_with_tools(
+    system_prompt: str,
+    user_prompt: str,
+    tools: List[Dict],
+    model: str = DEFAULT_OPENAI_MODEL,
+    temperature: float = 0.1,
+    max_tokens: int = 4000,
+) -> Dict:
+    """
+    Async wrapper for tool-bound OpenAI calls.
+
+    Returns a dict:
+      {"type": "tool_call", "name": str, "arguments": dict}
+      or
+      {"type": "text", "content": str}
+    """
+    await openai_rate_limiter.wait_if_needed()
+    logger.info("openai_tool_call_started", model=model, num_tools=len(tools))
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user",   "content": user_prompt},
+    ]
+
+    try:
+        result = await asyncio.to_thread(
+            _sync_openai_call_with_tools,
+            messages, tools, model, temperature, max_tokens,
+        )
+        logger.info(
+            "openai_tool_call_completed",
+            model=model,
+            result_type=result["type"],
+            tool_name=result.get("name"),
+        )
+        return result
+
+    except Exception as e:
+        logger.error("openai_tool_call_failed", model=model, error=str(e))
+        raise RuntimeError(f"OpenAI tool-binding call failed: {str(e)}")

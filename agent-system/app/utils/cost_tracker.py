@@ -73,7 +73,6 @@ class CostTracker:
         self.current_task: Optional[TaskCost] = None
         self.completed_tasks: List[TaskCost] = []
         
-        # Create cost tracking directory
         Path(COSTS_DIR).mkdir(exist_ok=True)
     
     def start_task(self, task_id: str):

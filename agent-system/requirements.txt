@@ -8,6 +8,7 @@ psycopg[binary]
 alembic==1.18.4
 langchain-openai
 # Config
+RestrictedPython
 pydantic-settings>=2.4.0
 pydantic==2.12.5
 langchain-anthropic
@@ -23,7 +24,6 @@ tabulate==0.10.0
 structlog
 
 # LLMs
-anthropic==0.85.0
 langchain==1.2.12
 langchain-community
 ddgs
@@ -33,7 +33,6 @@ scikit-learn==1.8.0
 sentence-transformers
 xmltodict
 # Utils
-arxiv
 python-dotenv==1.2.2
 requests==2.32.5
 wikipedia

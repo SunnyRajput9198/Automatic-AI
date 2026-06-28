@@ -62,6 +62,20 @@ class Tool(ABC):
     # A class containing abstract methods cannot be instantiated until all abstract methods are overridden by the child class.
     # @property allows a method to be accessed like an attribute.
     # It provides a clean interface while still executing code behind the scenes. Instead of calling obj.method(), you can access it as obj.property.
+    def to_openai_schema(self) -> Dict[str, Any]:
+        """
+        Convert this tool to the OpenAI function-calling schema format.
+        Used for real tool binding via the `tools=` API parameter.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            },
+        }
+
     def validate_input(self, **kwargs) -> bool:
         """Validate input against schema (basic validation)"""
         required_keys = self.input_schema.get("required", [])
