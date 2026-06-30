@@ -32,6 +32,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       WORKSPACE_DIR: /app/workspace
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       COSTS_DIR: /app/costs
       SHARED_WORKSPACE: /app/workspace/shared
       ENABLE_SHELL: "false"

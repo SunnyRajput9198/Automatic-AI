@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
@@ -339,14 +340,18 @@ async def get_analytics():
     if not files:
         return {"total_tasks": 0, "tasks": []}
 
-    tasks = []
-    for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:50]:
-        try:
-            with open(f) as fp:
-                data = json.load(fp)
-            tasks.append(data)
-        except Exception as e:
-            logger.warning("analytics_file_unreadable", file=str(f), error=str(e))
+    # Read cost files off the event loop thread — avoids blocking async workers
+    def _load_files():
+        results = []
+        for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:50]:
+            try:
+                with open(f) as fp:
+                    results.append(json.load(fp))
+            except Exception as e:
+                logger.warning("analytics_file_unreadable", file=str(f), error=str(e))
+        return results
+
+    tasks = await asyncio.to_thread(_load_files)
 
     total      = len(tasks)
     successful = sum(1 for t in tasks if t.get("success"))

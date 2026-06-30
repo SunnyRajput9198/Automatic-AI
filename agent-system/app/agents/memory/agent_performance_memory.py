@@ -1,3 +1,4 @@
+from app.agents.memory.trust_store import calculate_trust
 import json
 import os
 import structlog
@@ -15,6 +16,8 @@ class AgentPerformanceMemory:
     Stores and recalls agent performance across runs.
     Stats include a 'role' field so task_router can resolve
     agent names (e.g. 'researcher_001') back to roles ('researcher').
+    A trust score (0-1) is computed and stored alongside raw stats
+    using calculate_trust() from trust_store.
     """
 
     def __init__(self):
@@ -41,12 +44,14 @@ class AgentPerformanceMemory:
         """
         Store stats for an agent.
         Injects 'role' derived from the agent name if not already present
-        so task_router.py can resolve agent names to roles correctly.
+        and computes a trust score via calculate_trust().
         """
-        # Derive role from name: "researcher_001" → "researcher"
         if "role" not in stats:
             role = agent_name.split("_")[0] if "_" in agent_name else agent_name
             stats = {**stats, "role": role}
+
+        # Compute and persist trust score so task_router / coordinator can use it
+        stats = {**stats, "trust_score": calculate_trust(stats)}
 
         self.memory[agent_name] = stats
         self.save()
@@ -56,6 +61,7 @@ class AgentPerformanceMemory:
             agent=agent_name,
             role=stats.get("role"),
             success_rate=stats.get("success_rate"),
+            trust_score=stats.get("trust_score"),
         )
 
     def get(self, agent_name: str):

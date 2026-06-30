@@ -9,7 +9,7 @@ from pathlib import Path
 from app.utils.reference_resolver import ReferenceResolver
 from app.agents.memory.qdrant_memory import QdrantMemory
 from app.utils.websocket_manager import cancellation_store
-from app.orchestrator.graph import research_graph, make_initial_state as make_graph_state
+from app.orchestrator.graph import research_graph, run_research_graph, make_initial_state as make_graph_state
 from app.orchestrator.recovery_manager import RecoveryManager
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
@@ -446,11 +446,12 @@ async def execute_task_v3(task_id: str) -> None:
                                 prior_tasks=len(session_ctx),
                             )
 
-                    graph_state = await research_graph.ainvoke(
-                        make_graph_state(
+                    graph_state = await run_research_graph(
+                        initial_state=make_graph_state(
                             task=graph_task,
                             session_id=task.session_id,
-                        )
+                        ),
+                        thread_id=task_id,
                     )
                     elapsed = round(time.time() - t0, 2)
 
@@ -778,6 +779,10 @@ async def execute_task_v3(task_id: str) -> None:
                 max_retries = critic.MAX_RETRIES  # keep in sync with CriticAgent
                 retry_count = 0
                 step_succeeded = False
+                # Track which agents have been tried via switch for THIS step.
+                # Passed into AgentSwitcher so it never re-tries a previously
+                # failed agent, preventing A→B→A→B cycling.
+                switched_agents_this_step: set = set()
 
                 while retry_count < max_retries and not step_succeeded:
                     step.status = StepStatus.RUNNING
@@ -955,6 +960,7 @@ async def execute_task_v3(task_id: str) -> None:
                                         failed_agent="executor",
                                         instruction=step.instruction,
                                         context=context,
+                                        already_tried=switched_agents_this_step,
                                     )
                                 )
                                 if switched_result:
@@ -968,6 +974,12 @@ async def execute_task_v3(task_id: str) -> None:
                                     context["recovered_by_agent"] = new_agent
                                     step_succeeded = True
                                     if new_agent:
+                                        # Record the agent that succeeded and
+                                        # ensure it's excluded from future
+                                        # switches on this step (not needed
+                                        # since step_succeeded=True, but kept
+                                        # for completeness).
+                                        switched_agents_this_step.add(new_agent)
                                         agent_pref_memory.record_success(
                                             task_description=task.user_input,
                                             agent_name=new_agent,
@@ -979,6 +991,13 @@ async def execute_task_v3(task_id: str) -> None:
                                     )
                                     db.commit()
                                     break
+                                else:
+                                    # All switch candidates exhausted — hard fail
+                                    logger.error(
+                                        "agent_switcher_exhausted",
+                                        step=step_number,
+                                        tried=list(switched_agents_this_step),
+                                    )
 
                             elif decision.action == "skip_step":
                                 step.status = StepStatus.SKIPPED
@@ -1064,6 +1083,9 @@ async def execute_task_v3(task_id: str) -> None:
             )
             task_context.context_data = context
             db.commit()
+
+            # Flush batched tool success/failure stats to disk now that the task is done
+            tool_success_memory.flush()
 
             logger.info("orchestrator_task_completed", task_id=task_id)
             await ws_manager.emit(task_id, {"phase": "completed", "status": "completed"})

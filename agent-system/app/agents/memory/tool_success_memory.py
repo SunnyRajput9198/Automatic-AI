@@ -41,42 +41,23 @@ class ToolSuccessMemory:
             json.dump(self.memory, f, indent=2)
 
     def record_success(self, tool_name: str):
-        stats = self.memory.setdefault(
-            tool_name,
-            {
-                "success": 0,
-                "failure": 0,
-            },
-        )
-
+        stats = self.memory.setdefault(tool_name, {"success": 0, "failure": 0})
         stats["success"] += 1
-
-        self.save()
-
-        logger.info(
-            "tool_success_recorded",
-            tool=tool_name,
-            success=stats["success"],
-        )
+        # Dirty flag — persisted at task completion via flush(), not per-call
+        self._dirty = True
+        logger.info("tool_success_recorded", tool=tool_name, success=stats["success"])
 
     def record_failure(self, tool_name: str):
-        stats = self.memory.setdefault(
-            tool_name,
-            {
-                "success": 0,
-                "failure": 0,
-            },
-        )
-
+        stats = self.memory.setdefault(tool_name, {"success": 0, "failure": 0})
         stats["failure"] += 1
+        self._dirty = True
+        logger.info("tool_failure_recorded", tool=tool_name, failure=stats["failure"])
 
-        self.save()
-
-        logger.info(
-            "tool_failure_recorded",
-            tool=tool_name,
-            failure=stats["failure"],
-        )
+    def flush(self):
+        """Persist in-memory stats to disk. Call once at task completion."""
+        if getattr(self, "_dirty", False):
+            self.save()
+            self._dirty = False
 
     def get_stats(self, tool_name: str):
         return self.memory.get(tool_name)

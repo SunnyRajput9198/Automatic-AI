@@ -1,5 +1,5 @@
 import structlog
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 logger = structlog.get_logger()
 
@@ -42,7 +42,20 @@ class RecoveryManager:
 
         # --- Path 1: explicit suggestion from the Reflection model
         action = (reflection_output.get("suggested_action") or "").strip()
-        root_causes = reflection_output.get("root_causes", [])
+
+        # Normalise all list fields — callers may pass strings instead of lists,
+        # which would cause " ".join() to iterate characters and never match keywords.
+        def _to_list(val) -> List[str]:
+            if isinstance(val, list):
+                return [str(v) for v in val]
+            if isinstance(val, str) and val:
+                return [val]
+            return []
+
+        root_causes = _to_list(reflection_output.get("root_causes"))
+        what_failed = _to_list(reflection_output.get("what_failed"))
+        suggestions = _to_list(reflection_output.get("improvement_suggestions"))
+
         base_reason = root_causes[0] if root_causes else "Unknown failure"
 
         if action in self.VALID_ACTIONS:
@@ -50,9 +63,10 @@ class RecoveryManager:
             return RecoveryDecision(action=action, reason=base_reason)
 
         # --- Path 2: derive from actual Reflection fields
-        what_failed = reflection_output.get("what_failed", [])
-        suggestions = reflection_output.get("improvement_suggestions", [])
-        pattern_quality = float(reflection_output.get("pattern_quality", 0.5))
+        try:
+            pattern_quality = float(reflection_output.get("pattern_quality", 0.5))
+        except (TypeError, ValueError):
+            pattern_quality = 0.5
 
         # Combine all text for keyword scanning
         all_text = " ".join(what_failed + root_causes + suggestions).lower()
@@ -70,10 +84,7 @@ class RecoveryManager:
             "prompt", "token", "too long", "context", "truncat"
         ]):
             logger.info("recovery_smaller_prompt", reason=base_reason)
-            return RecoveryDecision(
-                action="retry_with_smaller_prompt",
-                reason=base_reason,
-            )
+            return RecoveryDecision(action="retry_with_smaller_prompt", reason=base_reason)
 
         # Tool failure / wrong tool selection → switch to a different agent
         if any(k in all_text for k in [
@@ -81,30 +92,21 @@ class RecoveryManager:
             "wrong tool", "tool selection",
         ]):
             logger.info("recovery_switch_agent", reason=base_reason)
-            return RecoveryDecision(
-                action="switch_agent",
-                reason=base_reason,
-            )
+            return RecoveryDecision(action="switch_agent", reason=base_reason)
 
         # Syntax / code errors → retry, executor may generate better code
         if any(k in all_text for k in [
             "syntax", "import", "module", "indentation", "nameerror",
         ]):
             logger.info("recovery_retry_code_error", reason=base_reason)
-            return RecoveryDecision(
-                action="retry",
-                reason=base_reason,
-            )
+            return RecoveryDecision(action="retry", reason=base_reason)
 
         # Step is optional or irrelevant → skip rather than keep retrying
         if any(k in all_text for k in [
             "skip", "not necessary", "optional", "irrelevant",
         ]):
             logger.info("recovery_skip_step", reason=base_reason)
-            return RecoveryDecision(
-                action="skip_step",
-                reason=base_reason,
-            )
+            return RecoveryDecision(action="skip_step", reason=base_reason)
 
         # Default: retry once more
         logger.info("recovery_default_retry", reason=base_reason)

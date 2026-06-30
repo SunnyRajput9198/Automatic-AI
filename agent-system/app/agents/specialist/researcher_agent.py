@@ -144,8 +144,8 @@ class ResearcherAgent(BaseAgent):
                                 results=result.metadata.get("num_results", 1))
                 else:
                     logger.warning("researcher_source_failed",
-                                   source=source_name,
-                                   error=result.error)
+                                    source=source_name,
+                                    error=result.error)
 
             # ── Step 2: fallback to WebSearchTool if both sources failed ──
             if not combined_output_parts:

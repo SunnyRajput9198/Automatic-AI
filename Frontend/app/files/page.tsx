@@ -43,7 +43,7 @@ export default function FilesPage() {
         @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body { background: #0d0d10; color: #f0f0f2; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
-      `}</style>
+`}</style>
 
             <div style={{ minHeight: '100vh' }}>
                 <header style={{

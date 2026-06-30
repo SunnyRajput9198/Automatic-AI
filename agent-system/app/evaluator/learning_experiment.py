@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
-from tabulate import tabulate
 
 from app.db.session import get_db_context
 from app.models.task import Task
@@ -167,20 +166,26 @@ class LearningExperiment:
         print(f"\nTask: {results['task']}")
         print(f"Runs: {results['num_runs']}\n")
 
-        headers = ["Run", "Status", "Duration (s)", "Steps", "Retries", "LLM Calls", "Searches"]
-        table_data = [
-            [
-                run["run"],
+        # Build plain-text table without tabulate dependency
+        headers = ["Run", "Status", "Duration(s)", "Steps", "Retries", "LLM Calls", "Searches"]
+        col_w   = [5,     8,         12,            7,       9,         11,           9]
+
+        header_row = "  ".join(h.ljust(w) for h, w in zip(headers, col_w))
+        separator  = "  ".join("-" * w for w in col_w)
+        print(header_row)
+        print(separator)
+
+        for run in results["runs"]:
+            row = [
+                str(run["run"]),
                 "✓" if run["success"] else "✗",
-                run["duration_sec"],
-                run["total_steps"],
-                run.get("total_retries", "N/A"),
-                run.get("llm_calls", "N/A"),
-                run.get("search_operations", "N/A"),
+                str(run["duration_sec"]),
+                str(run["total_steps"]),
+                str(run.get("total_retries", "N/A")),
+                str(run.get("llm_calls", "N/A")),
+                str(run.get("search_operations", "N/A")),
             ]
-            for run in results["runs"]
-        ]
-        print(tabulate(table_data, headers=headers, tablefmt="grid"))
+            print("  ".join(v.ljust(w) for v, w in zip(row, col_w)))
 
         if "improvement" in results and results["improvement"]:
             imp = results["improvement"]

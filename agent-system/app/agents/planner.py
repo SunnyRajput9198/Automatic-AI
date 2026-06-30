@@ -44,7 +44,8 @@ AVAILABLE TOOLS:
 
 📁 FILE OPERATIONS (persistent workspace):
 - file_read: Read content from a file in the workspace
-- file_write: Write content to a file in the workspace
+- file_write: Write content to a file in the workspace (overwrites if exists)
+- file_append: Append content to an existing file (creates if not exists)
 - file_list: List all files in the workspace
 - file_delete: Delete a file from the workspace
 
@@ -55,6 +56,10 @@ AVAILABLE TOOLS:
   * Use for: "search for X", "find tutorials", "what is X", "look up X"
 - web_fetch: Fetch content from a specific URL
   * Use when you have a specific URL to retrieve
+- news_search: Search for real-time news articles on any topic
+  * Returns headline, source, published date, and URL
+  * Use for: "latest news about X", "today's headlines", "recent updates on X", "breaking news"
+  * Prefer this over web_search when the query is clearly about current events or news
 
 🐍 CODE EXECUTION:
 - python_executor: Run Python code in a sandbox

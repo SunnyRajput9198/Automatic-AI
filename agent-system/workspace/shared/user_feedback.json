@@ -94,5 +94,11 @@
     "feedback": "good",
     "answer": "",
     "created_at": "2026-06-28T18:15:11.418325+00:00"
+  },
+  {
+    "query": "what is ai and current temprature in delhi",
+    "feedback": "good",
+    "answer": "",
+    "created_at": "2026-06-30T08:48:52.051909+00:00"
   }
 ]

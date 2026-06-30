@@ -1,8 +1,10 @@
 import structlog
+import json
 from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
 from typing import List, Dict, Any
 from pydantic import BaseModel
 from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
+from app.utils.llm import call_openai_with_tools
 
 logger = structlog.get_logger()
 
@@ -10,11 +12,58 @@ logger = structlog.get_logger()
 class RoutingDecision(BaseModel):
     """Routing decision for a task"""
 
-    agents_needed: List[str]  # List of agent roles needed
-    execution_mode: str  # "sequential" or "parallel"
-    reasoning: str  # Why these agents were chosen
-    confidence: float  # Confidence in this routing
+    agents_needed: List[str]
+    execution_mode: str       # "sequential" or "parallel"
+    reasoning: str
+    confidence: float
 
+
+# ---------------------------------------------------------------------------
+# Tool schema for LLM-based classification fallback
+# ---------------------------------------------------------------------------
+
+_CLASSIFY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_routing",
+        "description": "Submit the routing decision for the given task.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agents_needed": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["researcher", "engineer", "writer"]},
+                    "description": "One or more agent roles required to complete the task",
+                },
+                "execution_mode": {
+                    "type": "string",
+                    "enum": ["sequential", "parallel"],
+                    "description": "sequential if agents depend on each other, parallel if independent",
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Brief explanation of why these agents were chosen",
+                },
+            },
+            "required": ["agents_needed", "execution_mode", "reasoning"],
+        },
+    },
+}
+
+_CLASSIFY_SYSTEM = """You are a task routing agent. Given a task description, decide which specialist agents are needed.
+
+AGENTS:
+- researcher : web search, information gathering, fact-finding, comparisons, explanations
+- engineer   : Python code, calculations, scripts, file operations, data processing
+- writer     : drafting text, articles, reports, emails, summaries, documentation
+
+RULES:
+- Pick only the agents genuinely needed — don't add extras
+- researcher + writer → sequential (research first, then write)
+- researcher + engineer → parallel (independent work)
+- Single agent → sequential
+
+Call submit_routing with your decision."""
 
 class TaskRouter:
     """
@@ -140,31 +189,39 @@ class TaskRouter:
                     keywords_found.append(f"writer:{keyword}")
                 break
 
-        # Default to engineer if no matches
-        # No keyword match — ask Claude
+        # No keyword match — classify with a cheap LLM call instead of full ReasonerAgent
         if not agents_needed:
-            logger.info("router_no_keyword_match_using_reasoner", task=task)
-            from app.agents.reasoner import ReasonerAgent
+            logger.info("router_no_keyword_match_llm_classify", task=task)
+            try:
+                result = await call_openai_with_tools(
+                    system_prompt=_CLASSIFY_SYSTEM,
+                    user_prompt=f"Task: {task}",
+                    tools=[_CLASSIFY_TOOL],
+                    temperature=0.0,
+                    max_tokens=300,
+                )
+                if result["type"] == "tool_call" and result["name"] == "submit_routing":
+                    args = result["arguments"]
+                    agents_needed   = args.get("agents_needed", ["researcher"])
+                    execution_mode  = args.get("execution_mode", "sequential")
+                    llm_reasoning   = args.get("reasoning", "LLM classification")
+                    logger.info(
+                        "router_llm_classify_success",
+                        agents=agents_needed,
+                        mode=execution_mode,
+                    )
+                    return RoutingDecision(
+                        agents_needed=agents_needed,
+                        execution_mode=execution_mode,
+                        reasoning=f"LLM classification: {llm_reasoning}",
+                        confidence=0.80,
+                    )
+            except Exception as e:
+                logger.warning("router_llm_classify_failed", error=str(e))
 
-            reasoner = ReasonerAgent()
-            reasoning = await reasoner.reason(task)
-
-            # map problem_type to agent
-            type_to_agent = {
-                "file_operation":      "engineer",
-                "web_research":        "researcher",
-                "calculation":         "engineer",
-                "data_transformation": "engineer",
-                "system_operation":    "engineer",
-                "mixed":               "researcher",  # handled below as multi-agent
-            }
-            if reasoning.problem_type == "mixed":
-                agents_needed = ["researcher", "engineer"]
-                keywords_found.append("reasoner:mixed")
-            else:
-                agent = type_to_agent.get(reasoning.problem_type, "researcher")
-                agents_needed.append(agent)
-                keywords_found.append(f"reasoner:{reasoning.problem_type}")
+            # Hard fallback if LLM call also fails
+            agents_needed = ["researcher"]
+            keywords_found.append("default:researcher")
 
         # Determine execution mode
         execution_mode = self._determine_execution_mode(task_lower, agents_needed)

@@ -1,20 +1,18 @@
 import uuid
 import os
+import structlog
 from datetime import datetime, timezone
 from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Distance,
-    VectorParams,
-    PointStruct,
-)
-
+from qdrant_client.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
+from app.core.config import settings
+from huggingface_hub.utils.tqdm import disable_progress_bars
 
-# Suppress HuggingFace Hub unauthenticated request warnings — the model
-# is cached locally after first download so no token is required.
+logger = structlog.get_logger()
+
+# Suppress HuggingFace Hub unauthenticated request warnings
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 try:
-    from huggingface_hub.utils import disable_progress_bars
     disable_progress_bars()
 except Exception:
     pass
@@ -26,12 +24,10 @@ class QdrantMemory:
 
     def __init__(self):
         self.client = QdrantClient(
-            host="qdrant",  # Use the service name defined in docker-compose.yml
-            port=6333,
+            host=settings.QDRANT_HOST,
+            port=settings.QDRANT_PORT,
         )
-
         self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-
         self._ensure_collection()
 
     def _ensure_collection(self):

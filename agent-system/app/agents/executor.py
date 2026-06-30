@@ -1,4 +1,5 @@
 import json
+import time
 import structlog
 from typing import Dict, Any, Optional
 from app.utils.json_parser import extract_json
@@ -12,6 +13,7 @@ from app.tools.file_tools import (
     FileWriteTool,
     FileListTool,
     FileDeleteTool,
+    FileAppendTool,
 )
 from app.tools.web_search import (
     WebSearchTool,
@@ -19,7 +21,9 @@ from app.tools.web_search import (
     SemanticScholarTool,
     WikipediaTool,
 )
+from app.tools.news_tool import NewsSearchTool
 from app.core.config import settings
+from app.utils.cost_tracker import global_cost_tracker
 
 # This file answers: "Which tool should I use, and what exactly should I pass to it?"
 logger = structlog.get_logger()
@@ -90,10 +94,12 @@ RESPOND ONLY WITH VALID JSON.
         self._register_tool(FileWriteTool(self.file_manager))
         self._register_tool(FileListTool(self.file_manager))
         self._register_tool(FileDeleteTool(self.file_manager))
+        self._register_tool(FileAppendTool(self.file_manager))
         self._register_tool(WebSearchTool())
         self._register_tool(WebFetchTool())
         self._register_tool(SemanticScholarTool())
         self._register_tool(WikipediaTool())
+        self._register_tool(NewsSearchTool())
 
     def _register_tool(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
@@ -153,6 +159,7 @@ RESPOND ONLY WITH VALID JSON.
                 for tool_word in [
                     "web_search",
                     "web_fetch",
+                    "news_search",
                     "file_read",
                     "file_write",
                     "file_list",
@@ -281,7 +288,16 @@ Use bullet points if appropriate.
 
         # Run the tool
         try:
+            t0 = time.time()
             result = await self.tools[tool_name].run(**tool_inputs)
+            duration_ms = (time.time() - t0) * 1000
+
+            global_cost_tracker.record_tool_call(
+                tool_name=tool_name,
+                agent="executor",
+                success=result.success,
+                duration_ms=duration_ms,
+            )
             logger.info("executor_completed", tool=tool_name, success=result.success)
             return result
         except Exception as e:
@@ -354,6 +370,7 @@ Use bullet points if appropriate.
             "TOOL SELECTION GUIDE:\n"
             "- semantic_scholar_search → research papers, ML models, algorithms, academic topics\n"
             "- wikipedia_search        → factual lookups, definitions, general knowledge\n"
+            "- news_search             → latest news, current events, today's headlines, breaking news\n"
             "- web_search              → ambiguous or broad queries needing multiple sources\n"
             "- web_fetch               → fetch content from a specific known URL\n"
             "- python_executor         → run executable Python code (provide actual code, not description)\n"

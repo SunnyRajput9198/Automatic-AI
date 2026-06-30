@@ -1,13 +1,10 @@
-import json
 import uuid
 import structlog
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from app.utils.json_parser import extract_json
 
-from app.utils.llm import call_llm_with_system
 from app.models.memory import Memory
 from app.agents.reflection import Reflection
 
@@ -206,12 +203,13 @@ class ConfidenceMemory:
 
         Steps:
         1. Fetch candidates from DB (filtered by confidence threshold)
-        2. Compute composite scores
-        3. Ask LLM to pick the most relevant subset
+        2. Compute composite score: confidence × recency × (1 + √usage / 10)
+        3. Return top-N by composite score — no LLM call needed
         4. Update usage counters in a single batched DB query
 
-        FIX: Previously ran one db.query() per LLM-selected ID (N+1 queries).
-            Now batches all updates with a single IN filter.
+        The composite score already encodes task-similarity-independent quality.
+        For task-specific relevance the task_description is used as a simple
+        keyword overlap heuristic (fast, zero cost) on top of the score.
         """
         logger.info("confidence_recall_starting", task=task_description)
 
@@ -226,7 +224,7 @@ class ConfidenceMemory:
                 desc(Memory.times_referenced),
                 desc(Memory.created_at),
             )
-            .limit(limit * 3)  # fetch extra so LLM can choose the best subset
+            .limit(limit * 4)
             .all()
         )
 
@@ -234,93 +232,46 @@ class ConfidenceMemory:
             logger.info("confidence_recall_empty")
             return [], 0.0
 
-        # Build scored list
+        # Build scored list with lightweight keyword-overlap boost
+        task_words = set(task_description.lower().split())
+
         scored_memories: List[Dict] = []
         for mem in candidate_memories:
-            # FIX: explicit float() cast — DB drivers may return Decimal
-            confidence = (
-                float(mem.success_rate) if mem.success_rate is not None else 0.0
-            )
-            recency = self.calculate_recency_score(mem)
-            usage = float(mem.times_referenced or 0)
+            confidence = float(mem.success_rate) if mem.success_rate is not None else 0.0
+            recency    = self.calculate_recency_score(mem)
+            usage      = float(mem.times_referenced or 0)
 
-            scored_memories.append(
-                {
-                    "id": mem.id,
-                    "pattern": mem.task_pattern,
-                    "task": mem.task_description,
-                    "strategy": mem.strategy,
-                    "tools": mem.tools_used,
-                    "confidence": confidence,
-                    "recency": recency,
-                    "times_used": int(usage),
-                    "composite_score": confidence * recency * (1 + usage**0.5 / 10),
-                }
-            )
+            # Keyword overlap between current task and stored task description
+            mem_words   = set((mem.task_description or "").lower().split())
+            overlap     = len(task_words & mem_words) / max(len(task_words), 1)
+            overlap_boost = 1.0 + overlap * 0.5   # up to 1.5× boost for perfect match
+
+            composite = confidence * recency * (1 + usage**0.5 / 10) * overlap_boost
+
+            scored_memories.append({
+                "id":             mem.id,
+                "pattern":        mem.task_pattern,
+                "task":           mem.task_description,
+                "strategy":       mem.strategy,
+                "tools":          mem.tools_used,
+                "confidence":     confidence,
+                "recency":        recency,
+                "times_used":     int(usage),
+                "composite_score": composite,
+            })
 
         scored_memories.sort(key=lambda x: x["composite_score"], reverse=True)
-        top_candidates = scored_memories[: limit * 2]
+        top_memories = scored_memories[:limit]
 
-        # Ask the LLM which candidates are most relevant to the current task
-        prompt = (
-            f"Current task: {task_description}\n\n"
-            f"Past successful patterns (with confidence scores):\n"
-            f"{json.dumps(top_candidates, indent=2)}\n\n"
-            f"Select the {limit} most relevant patterns for this task.\n"
-            f"Consider both similarity to the current task and confidence score.\n"
-            f'Return JSON only: {{"relevant_ids": ["id1", "id2", ...]}}'
+        selected_ids = [m["id"] for m in top_memories]
+        self._update_usage_counters(selected_ids)
+
+        confidences    = [m["confidence"] for m in top_memories]
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+        logger.info(
+            "confidence_recall_completed",
+            num_memories=len(top_memories),
+            avg_confidence=avg_confidence,
         )
-
-        try:
-            response = await call_llm_with_system(
-                system_prompt=(
-                    "You are a memory retrieval assistant. "
-                    "Select the most relevant past patterns for the current task. "
-                    "Return JSON only."
-                ),
-                user_prompt=prompt,
-                model=self.model,
-                temperature=0.1,
-            )
-
-            result = extract_json(response, context="confidence_memory")
-            if not result:
-                logger.error(
-                    "confidence_recall_json_error",
-                    error="No valid JSON found",
-                    response=response[:500],
-                )
-                raise ValueError("Failed to parse memory recall JSON")
-            relevant_ids: List[str] = result.get("relevant_ids", [])[:limit]
-
-            # Build the return list from the already-scored data (no extra DB round-trip)
-            id_to_scored = {m["id"]: m for m in scored_memories}
-            relevant_memories = [
-                id_to_scored[mid] for mid in relevant_ids if mid in id_to_scored
-            ]
-            confidences = [m["confidence"] for m in relevant_memories]
-
-            # Batch-update usage counters for selected memories
-            self._update_usage_counters(relevant_ids)
-
-            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-
-            logger.info(
-                "confidence_recall_completed",
-                num_memories=len(relevant_memories),
-                avg_confidence=avg_confidence,
-            )
-
-            return relevant_memories, avg_confidence
-
-        except Exception as e:
-            logger.error("confidence_recall_error", error=str(e))
-            fallback = scored_memories[:limit]
-            self._update_usage_counters([m["id"] for m in fallback])
-
-            avg_conf = (
-                sum(m["confidence"] for m in fallback) / len(fallback)
-                if fallback
-                else 0.0
-            )
-            return fallback, avg_conf
+        return top_memories, avg_confidence

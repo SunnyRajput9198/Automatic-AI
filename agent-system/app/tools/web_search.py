@@ -1,5 +1,7 @@
 import asyncio
+import time
 import structlog
+from enum import Enum
 from typing import Dict, Any, List, Optional
 
 import httpx
@@ -11,27 +13,180 @@ logger = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
-# HTTP layer — pure data-fetching, no Tool coupling
+# Async Circuit Breaker
+# ---------------------------------------------------------------------------
+
+class _CircuitState(str, Enum):
+    CLOSED   = "closed"    # normal — requests go through
+    OPEN     = "open"      # tripped — requests blocked immediately
+    HALF_OPEN = "half_open" # testing — one probe request allowed
+
+
+class CircuitBreaker:
+    """
+    Async circuit breaker for external HTTP calls.
+
+    States:
+      CLOSED   → requests pass through normally.
+      OPEN     → all requests fail-fast for `recovery_timeout` seconds.
+      HALF_OPEN→ one probe is allowed; success → CLOSED, failure → OPEN again.
+
+    Parameters:
+      failure_threshold  — consecutive failures before tripping (default 3)
+      recovery_timeout   — seconds to wait before probing again (default 60)
+      name               — used in log messages
+    """
+
+    def __init__(
+        self,
+        name: str,
+        failure_threshold: int = 3,
+        recovery_timeout:  float = 60.0,
+    ):
+        self.name              = name
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout  = recovery_timeout
+
+        self._state            = _CircuitState.CLOSED
+        self._failure_count    = 0
+        self._opened_at:  Optional[float] = None
+        self._lock             = asyncio.Lock()
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    async def call(self, coro):
+        """
+        Execute `coro` through the circuit breaker.
+        Returns the coroutine's result or raises on open/failure.
+        """
+        async with self._lock:
+            if self._state == _CircuitState.OPEN:
+                if time.monotonic() - self._opened_at >= self.recovery_timeout:  # type: ignore[operator]
+                    self._state = _CircuitState.HALF_OPEN
+                    logger.info("circuit_breaker_half_open", name=self.name)
+                else:
+                    remaining = round(
+                        self.recovery_timeout - (time.monotonic() - self._opened_at), 1  # type: ignore[operator]
+                    )
+                    logger.warning(
+                        "circuit_breaker_open_reject",
+                        name=self.name,
+                        retry_in_sec=remaining,
+                    )
+                    raise CircuitOpenError(
+                        f"{self.name} circuit is OPEN. Retry in {remaining}s."
+                    )
+
+        # Execute outside the lock so other coroutines can proceed
+        try:
+            result = await coro
+            await self._on_success()
+            return result
+        except CircuitOpenError:
+            raise
+        except Exception as exc:
+            await self._on_failure(exc)
+            raise
+
+    @property
+    def state(self) -> _CircuitState:
+        return self._state
+
+    # ------------------------------------------------------------------
+    # Internal state transitions
+    # ------------------------------------------------------------------
+
+    async def _on_success(self):
+        async with self._lock:
+            if self._state == _CircuitState.HALF_OPEN:
+                logger.info("circuit_breaker_closed", name=self.name)
+            self._state         = _CircuitState.CLOSED
+            self._failure_count = 0
+            self._opened_at     = None
+
+    async def _on_failure(self, exc: Exception):
+        async with self._lock:
+            self._failure_count += 1
+            logger.warning(
+                "circuit_breaker_failure",
+                name=self.name,
+                count=self._failure_count,
+                threshold=self.failure_threshold,
+                error=str(exc),
+            )
+            if self._failure_count >= self.failure_threshold:
+                self._state     = _CircuitState.OPEN
+                self._opened_at = time.monotonic()
+                logger.error(
+                    "circuit_breaker_tripped",
+                    name=self.name,
+                    recovery_in_sec=self.recovery_timeout,
+                )
+
+
+class CircuitOpenError(Exception):
+    """Raised when a call is blocked because the circuit is OPEN."""
+
+
+# ---------------------------------------------------------------------------
+# HTTP layer — with circuit breakers + exponential backoff
 # ---------------------------------------------------------------------------
 
 class _SemanticScholarAPI:
     BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
     FIELDS   = "title,abstract,authors,citationCount,url,externalIds"
 
+    # One breaker per class (shared across all instances — process-level)
+    _breaker = CircuitBreaker(
+        name="semantic_scholar",
+        failure_threshold=3,
+        recovery_timeout=60.0,
+    )
+
     async def search(self, query: str, limit: int = 3) -> List[dict]:
         params = {"query": query, "limit": limit, "fields": self.FIELDS}
         try:
-            async with httpx.AsyncClient(
-                timeout=10, headers={"User-Agent": "ResearchAgent/1.0"}
-            ) as client:
-                resp = await client.get(self.BASE_URL, params=params)
+            return await self._breaker.call(self._fetch(params, query))
+        except CircuitOpenError as e:
+            logger.warning("semantic_scholar_circuit_open", query=query, reason=str(e))
+            return []
+        except Exception as e:
+            logger.error("semantic_scholar_error", error=str(e), query=query)
+            return []
+
+    async def _fetch(self, params: dict, query: str) -> List[dict]:
+        last_exc: Optional[Exception] = None
+        for attempt, backoff in enumerate([0, 1, 2], start=1):
+            if backoff:
+                await asyncio.sleep(backoff)
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10, headers={"User-Agent": "ResearchAgent/1.0"}
+                ) as client:
+                    resp = await client.get(self.BASE_URL, params=params)
+
+                if resp.status_code == 429:
+                    # Rate-limited — treat as a retriable failure with longer wait
+                    retry_after = int(resp.headers.get("Retry-After", 5))
+                    logger.warning(
+                        "semantic_scholar_rate_limited",
+                        retry_after=retry_after,
+                        attempt=attempt,
+                    )
+                    await asyncio.sleep(retry_after)
+                    last_exc = Exception(f"HTTP 429 (rate limited)")
+                    continue
+
                 if resp.status_code != 200:
-                    logger.warning("semantic_scholar_http_error", status=resp.status_code)
-                    return []
+                    raise Exception(f"HTTP {resp.status_code}")
 
                 papers = []
                 for p in resp.json().get("data", []):
-                    authors = ", ".join(a.get("name", "") for a in (p.get("authors") or []))
+                    authors = ", ".join(
+                        a.get("name", "") for a in (p.get("authors") or [])
+                    )
                     url = p.get("url") or ""
                     if not url and p.get("paperId"):
                         url = f"https://www.semanticscholar.org/paper/{p['paperId']}"
@@ -44,59 +199,111 @@ class _SemanticScholarAPI:
                         "url":            url,
                     })
                 return papers
-        except Exception as e:
-            logger.error("semantic_scholar_error", error=str(e), query=query)
-            return []
+
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                logger.warning(
+                    "semantic_scholar_timeout",
+                    attempt=attempt,
+                    query=query[:60],
+                )
+                continue
+
+        raise last_exc or Exception("Semantic Scholar: all retries exhausted")
 
 
 class _WikipediaRESTAPI:
     SEARCH_URL  = "https://en.wikipedia.org/w/api.php"
     SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
 
+    # One breaker per class (shared across all instances — process-level)
+    _breaker = CircuitBreaker(
+        name="wikipedia",
+        failure_threshold=3,
+        recovery_timeout=60.0,
+    )
+
     async def search(self, query: str) -> List[dict]:
         try:
-            async with httpx.AsyncClient(
-                timeout=10, headers={"User-Agent": "ResearchAgent/1.0"}
-            ) as client:
-                # Step 1: find best matching title
-                search_resp = await client.get(self.SEARCH_URL, params={
-                    "action": "query", "list": "search",
-                    "srsearch": query, "srlimit": 1, "format": "json",
-                })
-                if search_resp.status_code != 200:
-                    return []
-
-                hits = search_resp.json().get("query", {}).get("search", [])
-                if not hits:
-                    return []
-
-                title = hits[0]["title"]
-
-                # Step 2: fetch page summary
-                summary_resp = await client.get(
-                    self.SUMMARY_URL.format(title=title.replace(" ", "_"))
-                )
-                if summary_resp.status_code != 200:
-                    return []
-
-                page = summary_resp.json()
-                canonical_url = (
-                    page.get("content_urls", {}).get("desktop", {}).get("page", "")
-                    or f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
-                )
-                return [{
-                    "source":  "Wikipedia",
-                    "title":   page.get("title", title),
-                    "content": (page.get("extract") or "")[:500],
-                    "url":     canonical_url,
-                }]
+            return await self._breaker.call(self._fetch(query))
+        except CircuitOpenError as e:
+            logger.warning("wikipedia_circuit_open", query=query, reason=str(e))
+            return []
         except Exception as e:
             logger.error("wikipedia_rest_error", error=str(e), query=query)
             return []
 
+    async def _fetch(self, query: str) -> List[dict]:
+        last_exc: Optional[Exception] = None
+        # Exponential backoff: 0s, 1s, 2s
+        for attempt, backoff in enumerate([0, 1, 2], start=1):
+            if backoff:
+                await asyncio.sleep(backoff)
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10, headers={"User-Agent": "ResearchAgent/1.0"}
+                ) as client:
+                    # Step 1: find best matching title
+                    search_resp = await client.get(self.SEARCH_URL, params={
+                        "action": "query", "list": "search",
+                        "srsearch": query, "srlimit": 1, "format": "json",
+                    })
+
+                    if search_resp.status_code == 429:
+                        retry_after = int(search_resp.headers.get("Retry-After", 5))
+                        logger.warning(
+                            "wikipedia_rate_limited",
+                            retry_after=retry_after,
+                            attempt=attempt,
+                        )
+                        await asyncio.sleep(retry_after)
+                        last_exc = Exception("HTTP 429 (rate limited)")
+                        continue
+
+                    if search_resp.status_code != 200:
+                        raise Exception(f"HTTP {search_resp.status_code} on search")
+
+                    hits = search_resp.json().get("query", {}).get("search", [])
+                    if not hits:
+                        return []
+
+                    title = hits[0]["title"]
+
+                    # Step 2: fetch page summary
+                    summary_resp = await client.get(
+                        self.SUMMARY_URL.format(title=title.replace(" ", "_"))
+                    )
+                    if summary_resp.status_code != 200:
+                        raise Exception(
+                            f"HTTP {summary_resp.status_code} on summary for '{title}'"
+                        )
+
+                    page = summary_resp.json()
+                    canonical_url = (
+                        page.get("content_urls", {}).get("desktop", {}).get("page", "")
+                        or f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                    )
+                    return [{
+                        "source":  "Wikipedia",
+                        "title":   page.get("title", title),
+                        "content": (page.get("extract") or "")[:500],
+                        "url":     canonical_url,
+                    }]
+
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                logger.warning(
+                    "wikipedia_timeout",
+                    attempt=attempt,
+                    query=query[:60],
+                )
+                continue
+
+        raise last_exc or Exception("Wikipedia: all retries exhausted")
+
 
 # ---------------------------------------------------------------------------
-# Standalone bound tools — LLM can call each independently
+# Standalone bound tools
 # ---------------------------------------------------------------------------
 
 class SemanticScholarTool(Tool):
@@ -147,7 +354,6 @@ class SemanticScholarTool(Tool):
             return ToolResult(success=False, output="", error="Query is required")
 
         logger.info("semantic_scholar_search_running", query=query, limit=limit)
-
         papers = await self._api.search(query, limit=limit)
 
         if not papers:
@@ -219,7 +425,6 @@ class WikipediaTool(Tool):
             return ToolResult(success=False, output="", error="Query is required")
 
         logger.info("wikipedia_search_running", query=query)
-
         results = await self._api.search(query)
 
         if not results:
@@ -250,8 +455,6 @@ class WikipediaTool(Tool):
 
 # ---------------------------------------------------------------------------
 # WebSearchTool — combined fallback for ambiguous / general queries
-# Delegates internally to the same API layer; LLM should prefer the
-# specific tools above when the query type is clear.
 # ---------------------------------------------------------------------------
 
 class WebSearchTool(Tool):
@@ -281,7 +484,7 @@ class WebSearchTool(Tool):
     ]
 
     def __init__(self):
-        self._ss  = _SemanticScholarAPI()
+        self._ss   = _SemanticScholarAPI()
         self._wiki = _WikipediaRESTAPI()
         self._ddg  = DuckDuckGoSearchAPIWrapper(
             region="wt-wt", safesearch="moderate", time="y", max_results=5
@@ -337,7 +540,7 @@ class WebSearchTool(Tool):
             return []
 
     async def run(self, **kwargs) -> ToolResult:
-        query: str    = kwargs.get("query", "")
+        query: str       = kwargs.get("query", "")
         max_results: int = kwargs.get("max_results", 5)
 
         if not query.strip():

@@ -1,4 +1,5 @@
 from RestrictedPython import compile_restricted, safe_builtins, utility_builtins
+from RestrictedPython.PrintCollector import PrintCollector
 from app.tools.base import Tool, ToolResult
 import structlog
 from typing import Dict, Any
@@ -11,8 +12,8 @@ class RestrictedPythonExecutor(Tool):
 
     SECURITY:
     - Blocks dangerous builtins (file I/O, subprocess, etc.)
-    - Provides controlled globals
-    - Faster than subprocess since it runs inline
+    - Provides controlled globals via RestrictedPython's safe_builtins
+    - print() output is captured via PrintCollector
     """
 
     @property
@@ -47,23 +48,22 @@ class RestrictedPythonExecutor(Tool):
             # Safe globals
             safe_globals = {
                 "__builtins__": safe_builtins | utility_builtins,
-                "_print_": lambda *args: " ".join(map(str, args)),  # capture print
+                "_print_": PrintCollector,  # capture print output
                 "_getattr_": getattr,
                 "_setattr_": setattr,
                 "_getitem_": lambda obj, key: obj[key],
                 "_setitem_": lambda obj, key, value: obj.__setitem__(key, value),
             }
 
-            # Capture output
-            output_buffer = []
-            safe_globals["_print_"] = lambda *args: output_buffer.append(" ".join(map(str, args)))
+            # Prepare locals with a print collector
+            safe_locals = {}
+            exec(byte_code, safe_globals, safe_locals)
 
-            exec(byte_code, safe_globals)
+            # Collect printed output
+            output = safe_locals["_print_"].read()
 
-            result_output = "\n".join(output_buffer)
-            logger.info("restricted_python_executor_success", output_length=len(result_output))
-
-            return ToolResult(success=True, output=result_output, metadata={"sandbox": "RestrictedPython"})
+            logger.info("restricted_python_executor_success", output_length=len(output))
+            return ToolResult(success=True, output=output, metadata={"sandbox": "RestrictedPython"})
 
         except Exception as e:
             logger.error("restricted_python_executor_error", error=str(e))

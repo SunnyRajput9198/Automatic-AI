@@ -23,6 +23,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://agent:agent_password@postgres:5432/agent_system
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      NEWSAPI_KEY: ${NEWSAPI_KEY:-}
       WORKSPACE_DIR: /app/workspace
       SHARED_WORKSPACE: /app/workspace/shared
       SANDBOX_DIR: /app/sandbox

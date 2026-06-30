@@ -42,12 +42,12 @@ When given a task, determine the best approach:
 
 RESPONSE FORMAT (JSON only):
 {
-  "approach": "python_code|file_operation|shell_command",
-  "tool": "tool_name",
-  "inputs": {
+    "approach": "python_code|file_operation|shell_command",
+    "tool": "tool_name",
+    "inputs": {
     "param1": "value1"
-  },
-  "reasoning": "why this approach"
+    },
+    "reasoning": "why this approach"
 }
 
 For python_executor, provide complete EXECUTABLE Python code in the "code" field.

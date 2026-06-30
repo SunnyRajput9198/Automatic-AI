@@ -1,103 +1,117 @@
 import structlog
 from enum import Enum
+from typing import Optional
+
 from app.utils.json_parser import extract_json
 from app.tools.base import ToolResult
-from app.utils.llm import call_openai_with_system
+from app.utils.llm import call_openai_with_tools
 
 logger = structlog.get_logger()
 
 
-# This file answers one question after every step: "Did that work?"
-# Three possible outcomes. str, Enum means these are both enum values AND strings, so they can be stored in the database as text without extra conversion.
 class Verdict(str, Enum):
-    PASS = "PASS"
+    PASS  = "PASS"
     RETRY = "RETRY"
-    FAIL = "FAIL"
+    FAIL  = "FAIL"
 
 
-# Simple container holding the verdict + why + what to try differently.
 class CriticResult:
-    """Result of critic evaluation"""
+    """Result of critic evaluation."""
 
-    def __init__(self, verdict: Verdict, reason: str, suggestions: str = ""):
-        self.verdict = verdict
-        self.reason = reason
-        self.suggestions = suggestions
+    def __init__(
+        self,
+        verdict: Verdict,
+        reason: str,
+        suggestions: str = "",
+        relevance_score: int = 0,
+    ):
+        self.verdict         = verdict
+        self.reason          = reason
+        self.suggestions     = suggestions
+        self.relevance_score = relevance_score  # 0-100, logged for tuning
+
+
+# ---------------------------------------------------------------------------
+# Tool schema the LLM must call — enforces structured output, no free-text
+# ---------------------------------------------------------------------------
+
+_EVALUATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "submit_evaluation",
+        "description": "Submit the structured evaluation of a step execution.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "verdict": {
+                    "type": "string",
+                    "enum": ["PASS", "RETRY", "FAIL"],
+                    "description": "PASS=success, RETRY=try differently, FAIL=give up",
+                },
+                "relevance_score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "How well the output matches the instruction subject (0-100)",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Detailed explanation of the verdict",
+                },
+                "suggestions": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED when verdict=RETRY. "
+                        "Must be a concrete improved search query or action, "
+                        "e.g. 'try query: FastAPI vs Django async benchmarks 2024'. "
+                        "Empty string for PASS/FAIL."
+                    ),
+                },
+            },
+            "required": ["verdict", "relevance_score", "reason", "suggestions"],
+        },
+    },
+}
+
+_SYSTEM_PROMPT = """You are a critical evaluator agent. Evaluate whether a step execution succeeded.
+
+VERDICT OPTIONS:
+- PASS:  Step completed. Output is on-topic and useful.
+- RETRY: Step failed but a differently-worded query/approach could fix it.
+- FAIL:  Step failed and retrying will not help.
+
+RELEVANCE SCORE GUIDE (judge CONTENT, not fluency):
+- 65-100: Output is about the exact subject → PASS
+- 40-64 : Partially relevant, misses core subject → RETRY
+- 0-39  : Wrong domain entirely → RETRY (first attempt) or FAIL (later)
+
+EVALUATION PRIORITY ORDER:
+1. TOPICAL RELEVANCE — Is the output actually about the subject in the instruction?
+    A result sharing a keyword but covering a completely different domain is OFF-TOPIC.
+2. Tool executed without errors.
+3. Output is useful for subsequent steps.
+
+KEY RULES:
+- relevance_score < 65 is NOT a PASS, regardless of fluency or output length.
+- Default to RETRY on first attempt (retry_count=0) for off-topic results before FAIL.
+- When RETRY: suggestions MUST contain a concrete improved query, not vague advice.
+- Only use FAIL on first attempt for fundamentally unsearchable topics.
+- On retry_count >= 1 with same off-topic result: use FAIL.
+
+Call the submit_evaluation function with your assessment."""
 
 
 class CriticAgent:
     """
-    Evaluates step execution and decides next action.
+    Evaluates step execution and decides the next action.
 
-    THIS IS WHAT MAKES THE SYSTEM AUTONOMOUS.
+    Uses tool binding to force structured output — no free-text JSON parsing.
+    Threshold: relevance_score >= 65 for PASS (was 80, lowered to reduce
+    false RETRYs while data is being collected for further tuning).
     """
 
-    MAX_RETRIES = 2
-
-    SYSTEM_PROMPT = """You are a critical evaluator agent. Your job is to:
-1. Analyze if a step execution was successful
-2. Decide if retry is needed
-3. Provide suggestions for improvement
-
-VERDICT OPTIONS:
-- PASS: Step completed successfully, continue to next step
-- RETRY: Step failed but a different approach (e.g. a reformulated search
-    query) could plausibly fix it on a second attempt
-- FAIL: Step failed and no reasonable retry would help
-RESPONSE FORMAT (JSON only):
-{
-    "verdict": "PASS|RETRY|FAIL",
-    "relevance_score": <0-100 integer, how well the output matches the instruction's subject>,
-    "reason": "detailed explanation of why",
-    "suggestions": "specific changes to try (REQUIRED for RETRY)"
-}
-
-SCORING GUIDE:
-- 80-100: Output is clearly about the exact subject named in the instruction → PASS
-- 40-79: Partially relevant, mentions related concepts but misses the core subject → RETRY
-- 0-39: Completely different domain/topic → RETRY (first attempt) or FAIL (later attempts)
-
-EVALUATION CRITERIA (in order of importance):
-1. TOPICAL RELEVANCE — Is the output actually ABOUT the subject named in the
-    instruction, not just sharing a keyword with it? A result that mentions
-    "Python" but is about a completely different domain (e.g. astrotourism,
-    epidemiology, chip architecture) is OFF-TOPIC, even if it is well-written
-    and coherent. Off-topic output is NOT a PASS, regardless of fluency.
-2. Did the tool execute without errors?
-3. Is the output useful for subsequent steps?
-
-BE STRICT ON TOPIC, LENIENT ON FORM:
-- Coherence, fluency, or "the tool ran successfully" is NOT sufficient for PASS
-    if the subject matter does not match the instruction. Judge the CONTENT,
-    not just whether something was returned.
-- Empty output may still be acceptable depending on intent, but irrelevant
-    non-empty output is worse than empty output — do not reward verbosity.
-- Do NOT fail a step merely because the method/process is not shown, or
-    because the answer is short — as long as the CONTENT is on-topic and correct.
-- If even one part of a mixed/multi-source result set is genuinely on-topic
-    and useful, PASS is acceptable. If most/all results are off-topic, do not
-    default to FAIL — first check whether RETRY applies (see below).
-
-WHEN TO USE RETRY (for off-topic / wrong-result web search steps):
-- DEFAULT TO RETRY for off-topic results on the FIRST attempt (retry_count=0),
-    even if you are not fully confident a new query will help. A reformulated
-    query is almost always worth one try before giving up — FAIL on the first
-    attempt should be rare.
-- If the output is off-topic because the SEARCH QUERY was likely too broad,
-    too narrow, ambiguous, or used the wrong terminology — and a more specific
-    or differently-worded query could plausibly retrieve the right subject —
-    use RETRY, not FAIL.
-- When you choose RETRY, "suggestions" MUST contain a concrete improved
-    search query (e.g. "try query: FastAPI vs Django benchmarks async Python"),
-    not vague advice like "use better keywords".
-- Only use FAIL on the first attempt if the topic is fundamentally unsearchable
-    (e.g. asks about private/internal information, or something that doesn't
-    exist) — not merely because the current result happened to be off-topic.
-- On later attempts (retry_count >= 1), if a reformulated query STILL returns
-    the same or a similarly off-topic result, FAIL is appropriate — repeating
-    near-identical results is a sign that retrying further will not help.
-RESPOND ONLY WITH JSON.
-"""
+    MAX_RETRIES    = 2
+    PASS_THRESHOLD = 65   # tune upward once real score distribution is known
 
     def __init__(self, model: str = "gpt-5-mini"):
         self.model = model
@@ -111,7 +125,7 @@ RESPOND ONLY WITH JSON.
 
         logger.info(
             "critic_evaluating",
-            instruction=step_instruction,
+            instruction=step_instruction[:80],
             success=tool_result.success,
             retry_count=retry_count,
         )
@@ -120,8 +134,9 @@ RESPOND ONLY WITH JSON.
         if retry_count >= self.MAX_RETRIES:
             return CriticResult(
                 verdict=Verdict.FAIL,
-                reason=f"Step exceeded maximum retries ({self.MAX_RETRIES})",
+                reason=f"Exceeded maximum retries ({self.MAX_RETRIES})",
                 suggestions="",
+                relevance_score=0,
             )
 
         try:
@@ -129,82 +144,131 @@ RESPOND ONLY WITH JSON.
         except Exception:
             metadata_str = "(unserializable metadata)"
 
-        user_prompt = f"""STEP INSTRUCTION:
-{step_instruction}
-
-TOOL EXECUTION:
-- Success: {tool_result.success}
-- Output: {tool_result.output[:500] if tool_result.output else "(empty)"}
-- Error: {tool_result.error if tool_result.error else "(none)"}
-- Metadata: {metadata_str}
-
-RETRY COUNT: {retry_count}/{self.MAX_RETRIES}
-
-Evaluate if this step succeeded and return verdict JSON.
-"""
+        user_prompt = (
+            f"STEP INSTRUCTION:\n{step_instruction}\n\n"
+            f"TOOL EXECUTION:\n"
+            f"- Success: {tool_result.success}\n"
+            f"- Output: {tool_result.output[:500] if tool_result.output else '(empty)'}\n"
+            f"- Error: {tool_result.error or '(none)'}\n"
+            f"- Metadata: {metadata_str}\n\n"
+            f"RETRY COUNT: {retry_count}/{self.MAX_RETRIES}\n\n"
+            "Call submit_evaluation with your assessment."
+        )
 
         try:
-            response = await call_openai_with_system(
-                system_prompt=self.SYSTEM_PROMPT,
+            result = await call_openai_with_tools(
+                system_prompt=_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
+                tools=[_EVALUATE_TOOL],
                 model=self.model,
                 temperature=0.1,
+                max_tokens=1000,
             )
 
-            # ---- ROBUST JSON EXTRACTION ----
-            evaluation = extract_json(response, context="critic")
-            if not evaluation:
-                logger.error("critic_json_error", error="No valid JSON found")
+            # ------------------------------------------------------------------
+            # Tool binding path — structured, no parsing needed
+            # ------------------------------------------------------------------
+            if result["type"] == "tool_call" and result["name"] == "submit_evaluation":
+                args            = result["arguments"]
+                verdict_raw     = args.get("verdict", "FAIL").upper()
+                relevance_score = int(args.get("relevance_score", 0))
+                reason          = args.get("reason", "No reason provided")
+                suggestions     = args.get("suggestions", "")
+
+                try:
+                    verdict = Verdict(verdict_raw)
+                except ValueError:
+                    verdict = Verdict.FAIL
+
+                # Override: model said PASS but score is below threshold
+                if verdict == Verdict.PASS and relevance_score < self.PASS_THRESHOLD:
+                    logger.warning(
+                        "critic_threshold_override",
+                        score=relevance_score,
+                        threshold=self.PASS_THRESHOLD,
+                        original_verdict="PASS",
+                    )
+                    verdict = Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL
+                    reason = (
+                        f"{reason} "
+                        f"(overridden: score {relevance_score} < threshold {self.PASS_THRESHOLD})"
+                    )
+
+                # Safety: RETRY without a concrete suggestion → FAIL
+                if verdict == Verdict.RETRY and not suggestions.strip():
+                    logger.warning("critic_retry_missing_suggestions", reason=reason)
+                    verdict = Verdict.FAIL
+                    reason  = f"{reason} (RETRY had no concrete suggestion; treating as FAIL)"
+
+                logger.info(
+                    "critic_evaluated",
+                    verdict=verdict,
+                    relevance_score=relevance_score,
+                    reason=reason[:120],
+                )
                 return CriticResult(
-                    verdict=(
-                        Verdict.RETRY
-                        if retry_count < self.MAX_RETRIES
-                        else Verdict.FAIL
-                    ),
-                    reason="Failed to parse evaluation JSON: No valid JSON found",
-                    suggestions="Ensure the response is valid JSON only",
-                )
-
-            verdict_raw = evaluation.get("verdict", "FAIL")
-            try:
-                verdict = Verdict(verdict_raw.upper())
-            except ValueError:
-                verdict = Verdict.FAIL
-
-            reason = evaluation.get("reason", "No reason provided")
-            suggestions = evaluation.get("suggestions", "")
-
-            # Safety net: if the model said RETRY but forgot to give a
-            # concrete suggestion, downgrade to FAIL rather than retrying blindly.
-            if verdict == Verdict.RETRY and not suggestions.strip():
-                logger.error(
-                    "critic_retry_missing_suggestions",
+                    verdict=verdict,
                     reason=reason,
+                    suggestions=suggestions,
+                    relevance_score=relevance_score,
                 )
-                verdict = Verdict.FAIL
-                reason = f"{reason} (RETRY requested without a concrete suggestion; treating as FAIL)"
 
-            logger.info(
-                "critic_evaluated",
-                verdict=verdict,
-                reason=reason,
+            # ------------------------------------------------------------------
+            # Fallback: model returned plain text instead of tool call
+            # (shouldn't happen with tool binding, but handle gracefully)
+            # ------------------------------------------------------------------
+            logger.warning(
+                "critic_tool_binding_fallback",
+                preview=str(result.get("content", ""))[:200],
             )
+            evaluation = extract_json(result.get("content", ""), context="critic")
+            if evaluation:
+                return self._from_dict(evaluation, retry_count)
 
+            # Complete parse failure
+            logger.error("critic_json_error", error="No valid response from tool binding or fallback")
             return CriticResult(
-                verdict=verdict,
-                reason=reason,
-                suggestions=suggestions,
+                verdict=Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL,
+                reason="Failed to parse critic evaluation",
+                suggestions="",
+                relevance_score=0,
             )
 
         except Exception as e:
             logger.error("critic_error", error=str(e))
             return CriticResult(
-                verdict=(
-                    Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL
-                ),
+                verdict=Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL,
                 reason=f"Evaluation error: {str(e)}",
                 suggestions="",
+                relevance_score=0,
             )
+
+    def _from_dict(self, data: dict, retry_count: int) -> CriticResult:
+        """Build CriticResult from a raw dict (fallback path)."""
+        verdict_raw     = data.get("verdict", "FAIL").upper()
+        relevance_score = int(data.get("relevance_score", 0))
+        reason          = data.get("reason", "No reason provided")
+        suggestions     = data.get("suggestions", "")
+
+        try:
+            verdict = Verdict(verdict_raw)
+        except ValueError:
+            verdict = Verdict.FAIL
+
+        if verdict == Verdict.PASS and relevance_score < self.PASS_THRESHOLD:
+            verdict = Verdict.RETRY if retry_count < self.MAX_RETRIES else Verdict.FAIL
+            reason  = f"{reason} (score {relevance_score} < threshold {self.PASS_THRESHOLD})"
+
+        if verdict == Verdict.RETRY and not suggestions.strip():
+            verdict = Verdict.FAIL
+            reason  = f"{reason} (no suggestion for RETRY)"
+
+        return CriticResult(
+            verdict=verdict,
+            reason=reason,
+            suggestions=suggestions,
+            relevance_score=relevance_score,
+        )
 
     def should_retry(self, verdict: Verdict) -> bool:
         return verdict == Verdict.RETRY

@@ -1,5 +1,3 @@
-# app/agents/memory/user_feedback_memory.py
-
 import json
 import os
 from datetime import datetime, timezone
@@ -59,28 +57,19 @@ class UserFeedbackMemory:
         answer: Optional[str] = None,
     ):
         """
-        feedback:
-            good
-            bad
-            neutral
+        feedback: good | bad | neutral
+        Appends to in-memory list and flushes to disk immediately
+        (feedback volume is low, so per-call save is acceptable here).
         """
-
         item = {
-            "query": query,
-            "feedback": feedback.lower().strip(),
-            "answer": answer or "",
+            "query":      query,
+            "feedback":   feedback.lower().strip(),
+            "answer":     answer or "",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-
         self.feedback.append(item)
-
         self.save()
-
-        logger.info(
-            "user_feedback_recorded",
-            query=query[:100],
-            feedback=feedback,
-        )
+        logger.info("user_feedback_recorded", query=query[:100], feedback=feedback)
 
     def get_feedback_stats(self) -> Dict:
         total = len(self.feedback)

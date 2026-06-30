@@ -12,17 +12,39 @@ import app.utils
 import app.utils.json_parser
 import app.utils.llm
 from app.tools.base import ToolResult as _TR
+from langchain_core.runnables import RunnableConfig
+from typing import cast
 from app.utils.llm import call_openai_with_system
 from app.utils.file_manager import FileManager
 from app.core.config import settings
-from typing import TypedDict, Optional, List
+from typing import TypedDict, Optional, List, cast
 
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 logger = structlog.get_logger()
 
 RESEARCHER_TIMEOUT_SEC = 35
 TASK_TIMEOUT_SEC       = 90          # hard cap across all retries
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpointer factory
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_checkpointer() -> AsyncPostgresSaver:
+    """
+    Return an initialised AsyncPostgresSaver connected to the project's
+    Postgres database.  Called once per graph invocation.
+
+    AsyncPostgresSaver uses psycopg3 under the hood and creates its own
+    connection pool, so it is safe to call in an async context without
+    blocking the event loop.
+    """
+    async with AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL) as checkpointer:
+        # Ensure the checkpoint tables exist (idempotent — safe to call every time)
+        await checkpointer.setup()
+        return checkpointer
 
 def _load(path: str, name: str):
     if name in sys.modules:
@@ -408,6 +430,10 @@ async def synthesizer_node(state: AgentState) -> AgentState:
 # Routing function (3-way)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Graph builder
+# ─────────────────────────────────────────────────────────────────────────────
+
 MAX_RETRIES = 2
 
 def route_after_critic(state: AgentState) -> str:
@@ -459,44 +485,71 @@ def increment_retry(state: AgentState) -> AgentState:
     return {**state, "retry_count": state.get("retry_count", 0) + 1}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Graph builder
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_researcher_graph():
+def _build_graph_definition() -> StateGraph:
+    """Return an uncompiled StateGraph (checkpointer is attached at compile time)."""
     g = StateGraph(AgentState)
 
-    # Nodes
     g.add_node("planner",         planner_node)
     g.add_node("researcher",      researcher_node)
     g.add_node("critic",          critic_node)
     g.add_node("increment_retry", increment_retry)
     g.add_node("synthesizer",     synthesizer_node)
 
-    # Edges
     g.add_edge(START,             "planner")
     g.add_edge("planner",         "researcher")
     g.add_edge("researcher",      "critic")
-    g.add_edge(START,              "planner")
-    g.add_edge("planner",          "researcher")
-    g.add_edge("increment_retry", "researcher")    # retry loop
+    g.add_edge("increment_retry", "researcher")
     g.add_edge("synthesizer",     END)
 
-    # Conditional: critic → synthesizer (PASS) OR retry OR end (FAIL)
     g.add_conditional_edges(
         "critic",
         route_after_critic,
         {
-            "end":   "synthesizer",   # PASS → synthesize then end
+            "end":   "synthesizer",
             "retry": "increment_retry",
         },
     )
 
-    return g.compile()
+    return g
 
 
-# ── Compiled singleton ────────────────────────────────────────────────────────
-research_graph = build_researcher_graph()
+# ── Compiled singleton (no checkpointer — used when checkpointing is off) ────
+# loop_v3 calls run_research_graph() which attaches the checkpointer per call.
+_graph_definition = _build_graph_definition()
+research_graph    = _graph_definition.compile()   # fallback / test usage
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpointed invocation helper — used by loop_v3
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def run_research_graph(
+    initial_state: AgentState,
+    thread_id: str,
+) -> AgentState:
+    """
+    Invoke the research graph with a PostgresSaver checkpointer.
+    """
+    try:
+        checkpointer = await get_checkpointer()
+        compiled     = _graph_definition.compile(checkpointer=checkpointer)
+        config       = RunnableConfig(configurable={"thread_id": thread_id})
+
+        logger.info("graph_invoking_with_checkpoint", thread_id=thread_id)
+        result = cast(AgentState, await compiled.ainvoke(initial_state, config=config))
+        logger.info("graph_completed_with_checkpoint", thread_id=thread_id,
+                    verdict=result.get("critic_verdict"))
+        return result
+
+    except Exception as e:
+        logger.warning(
+            "graph_checkpointer_unavailable",
+            error=str(e),
+            fallback="running without checkpointer",
+        )
+        return cast(AgentState, await research_graph.ainvoke(initial_state))
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
