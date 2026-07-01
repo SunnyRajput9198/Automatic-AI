@@ -1,8 +1,0 @@
-{
-  "previous_task": "research transformers in machine learning",
-  "task_status": "COMPLETED",
-  "task_output_preview": "RESEARCH FINDINGS\nQuery: transformers in machine learning\nSource: wikipedia+arxiv+pubmed+github\nResu...",
-  "week4_status": "All agents failed to complete the task",
-  "should_search": false,
-  "total_sessions": 1
-}

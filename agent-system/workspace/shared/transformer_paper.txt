@@ -1,3 +1,0 @@
-1. Wikipedia — Attention Is All You Need
-   "Attention Is All You Need" is a 2017 research paper in machine learning authored by eight scientists and engineers working at Google. The paper introduced a new deep learning architecture known as the transformer, based on the attention mechanism proposed in 2014 by Bahdanau et al. The transformer approach it describes has become the main architecture of a wide variety of artificial intelligence, including large language models. At the time, the focus of the research was on improving Seq2seq te
-   URL: https://en.wikipedia.org/wiki/Attention_Is_All_You_Need
