@@ -38,7 +38,6 @@ services:
       ENABLE_SHELL: "false"
       ENABLE_PYTHON_EXECUTOR: "true"
       SANDBOX_DIR: /app/sandbox
-      HF_HUB_DISABLE_IMPLICIT_TOKEN: "1"
       TOKENIZERS_PARALLELISM: "false"
     depends_on:
       postgres:

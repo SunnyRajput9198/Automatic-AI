@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     ENABLE_PYTHON_EXECUTOR:  bool = True
     QDRANT_HOST: str = "qdrant"
     QDRANT_PORT: int = 6333
-    DEFAULT_OPENAI_MODEL:    str = "gpt-4o-mini"
+    DEFAULT_OPENAI_MODEL:    str = "gpt-5-mini"
     DEFAULT_ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"
     NEWSAPI_KEY: str | None = None
 

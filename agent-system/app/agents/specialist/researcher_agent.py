@@ -12,12 +12,18 @@ from app.tools.web_search import (
     WebSearchTool,
     WebFetchTool,
 )
+from app.tools.news_tool import NewsSearchTool
 
 logger = structlog.get_logger()
 
 # Fetch full page when total snippets are below this threshold
 _FETCH_THRESHOLD = 3
 
+# Keywords that signal a NEWS query → use NewsSearchTool
+_NEWS_KW = [
+    "news", "headline", "latest", "breaking", "today", "current events",
+    "recent", "update", "announcement", "report", "coverage",
+]
 # Keywords that signal an academic query → include Semantic Scholar
 _ACADEMIC_KW = [
     "neural network", "algorithm", "paper", "model", "architecture",
@@ -55,12 +61,14 @@ class ResearcherAgent(BaseAgent):
             allowed_tools=[
                 "semantic_scholar_search",
                 "wikipedia_search",
+                "news_search",
                 "web_search",
                 "web_fetch",
             ],
         )
         self.semantic_scholar = SemanticScholarTool()
         self.wikipedia        = WikipediaTool()
+        self.news             = NewsSearchTool()
         self.web_search       = WebSearchTool()   # fallback only
         self.web_fetch        = WebFetchTool()
 
@@ -74,6 +82,10 @@ class ResearcherAgent(BaseAgent):
             return False
         return any(kw in q for kw in _ACADEMIC_KW)
 
+    def _is_news(self, query: str) -> bool:
+        q = query.lower()
+        return any(kw in q for kw in _NEWS_KW)
+
     # ------------------------------------------------------------------
     # Parallel source dispatch
     # ------------------------------------------------------------------
@@ -82,8 +94,33 @@ class ResearcherAgent(BaseAgent):
         """
         Fire the appropriate source tools in parallel and return a
         {tool_name: ToolResult} map so each source is tracked independently.
+
+        Routing:
+          news query   → news_search (+ wikipedia for context)
+          academic     → semantic_scholar + wikipedia
+          general      → wikipedia only
         """
+        is_news     = self._is_news(query)
         is_academic = self._is_academic(query)
+
+        if is_news:
+            logger.info("researcher_parallel_dispatch",
+                        sources=["news_search", "wikipedia_search"], query=query)
+            news_result, wiki_result = await asyncio.gather(
+                self.news.run(query=query, num_results=8),
+                self.wikipedia.run(query=query),
+                return_exceptions=True,
+            )
+            return {
+                "news_search": (
+                    news_result if isinstance(news_result, ToolResult)
+                    else ToolResult(success=False, output="", error=str(news_result))
+                ),
+                "wikipedia_search": (
+                    wiki_result if isinstance(wiki_result, ToolResult)
+                    else ToolResult(success=False, output="", error=str(wiki_result))
+                ),
+            }
 
         if is_academic:
             logger.info("researcher_parallel_dispatch",
@@ -97,21 +134,19 @@ class ResearcherAgent(BaseAgent):
             return {
                 "semantic_scholar_search": (
                     ss_result if isinstance(ss_result, ToolResult)
-                    else ToolResult(success=False, output="",
-                                    error=str(ss_result))
+                    else ToolResult(success=False, output="", error=str(ss_result))
                 ),
                 "wikipedia_search": (
                     wiki_result if isinstance(wiki_result, ToolResult)
-                    else ToolResult(success=False, output="",
-                                    error=str(wiki_result))
+                    else ToolResult(success=False, output="", error=str(wiki_result))
                 ),
             }
-        else:
-            logger.info("researcher_parallel_dispatch",
-                        sources=["wikipedia_search"],
-                        query=query)
-            wiki_result = await self.wikipedia.run(query=query)
-            return {"wikipedia_search": wiki_result}
+
+        # General query — Wikipedia only
+        logger.info("researcher_parallel_dispatch",
+                    sources=["wikipedia_search"], query=query)
+        wiki_result = await self.wikipedia.run(query=query)
+        return {"wikipedia_search": wiki_result}
 
     # ------------------------------------------------------------------
     # Main execute

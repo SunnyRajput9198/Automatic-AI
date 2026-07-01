@@ -172,7 +172,9 @@ RESPOND ONLY WITH JSON."""
                     error="No valid JSON found",
                     response=response[:500],
                 )
-                return _safe_default("Unable to analyze — proceeding with caution", "JSON parse error")
+                return _safe_default(
+                    "Unable to analyze — proceeding with caution", "JSON parse error"
+                )
 
             reasoning = ReasoningOutput(
                 problem_type=reasoning_data.get("problem_type", "mixed"),
@@ -209,10 +211,6 @@ RESPOND ONLY WITH JSON."""
         is low enough that past experience might help.
         """
         return reasoning.needs_memory or reasoning.confidence < 0.7
-
-    def should_use_search(self, reasoning: ReasoningOutput) -> bool:
-        """Return True if the reasoner determined web search is needed."""
-        return reasoning.needs_search
 
 
 def _safe_default(strategy: str, uncertainty: str) -> ReasoningOutput:

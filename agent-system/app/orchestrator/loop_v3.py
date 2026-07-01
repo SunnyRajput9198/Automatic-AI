@@ -70,6 +70,105 @@ def is_memory_query(text: str) -> bool:
     return any(k in lower for k in MEMORY_QUERY_KEYWORDS)
 
 
+# Tools that are always safe to run in parallel — they are read-only,
+# produce no side-effects, and don't depend on each other's output.
+_PARALLEL_SAFE_TOOLS = frozenset({
+    "web_search", "web_fetch", "news_search", "get_weather",
+    "semantic_scholar_search", "wikipedia_search",
+})
+
+
+def _is_parallel_safe(instruction: str) -> bool:
+    """
+    Return True if a step instruction is safe to run in parallel with other
+    parallel-safe steps (i.e. it only reads from the web, not files or code).
+    Detection is keyword-based — conservative: false-negatives are fine,
+    false-positives would be bad (running dependent steps concurrently).
+    """
+    low = instruction.lower()
+    # Explicit tool mentions
+    if any(t in low for t in _PARALLEL_SAFE_TOOLS):
+        return True
+    # Common planner phrasings that always imply a web lookup
+    web_phrases = [
+        "search for", "look up", "find information", "find the",
+        "retrieve", "get current", "fetch", "what is the current",
+        "latest news", "current news", "breaking news",
+    ]
+    return any(p in low for p in web_phrases)
+
+
+def _group_parallel_steps(plan: list) -> list[list]:
+    """
+    Build execution levels from a DAG defined by each step's depends_on list.
+
+    Algorithm — topological level sort:
+    1. Steps with no dependencies → level 0 (run in parallel)
+    2. Steps whose ALL dependencies are in completed levels → next level
+    3. Repeat until all steps are assigned
+
+    Falls back to the old keyword heuristic if no step declares depends_on
+    (backwards-compatible with plans from the old planner).
+
+    Returns a list of batches, where each batch is a list of step_data dicts
+    to execute concurrently.
+    """
+    # Check if any step has an explicit depends_on declaration
+    has_deps = any("depends_on" in s and s["depends_on"] for s in plan)
+    any_declared = any("depends_on" in s for s in plan)
+
+    if any_declared:
+        # DAG path — use declared dependencies
+        step_map  = {s["step"]: s for s in plan}
+        completed: set = set()
+        remaining = list(plan)
+        batches   = []
+
+        while remaining:
+            # Steps whose dependencies are all satisfied
+            ready = [
+                s for s in remaining
+                if all(dep in completed for dep in s.get("depends_on", []))
+            ]
+            if not ready:
+                # Cycle or bad deps — fall back: run rest sequentially
+                logger.warning("dag_cycle_detected", remaining=[s["step"] for s in remaining])
+                for s in remaining:
+                    batches.append([s])
+                break
+
+            batches.append(ready)
+            for s in ready:
+                completed.add(s["step"])
+            remaining = [s for s in remaining if s["step"] not in completed]
+
+        logger.info(
+            "orchestrator_dag_batches",
+            total_steps=len(plan),
+            levels=len(batches),
+            parallel_levels=sum(1 for b in batches if len(b) > 1),
+        )
+        return batches
+
+    # Legacy path — keyword heuristic (no depends_on in plan)
+    batches: list[list] = []
+    current_batch: list = []
+
+    for step_data in plan:
+        if _is_parallel_safe(step_data["instruction"]):
+            current_batch.append(step_data)
+        else:
+            if current_batch:
+                batches.append(current_batch)
+                current_batch = []
+            batches.append([step_data])
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
 def classify_failure(error: Optional[str]) -> str:
     """Map a raw error string to a coarse failure category for metrics."""
     if not error:
@@ -341,6 +440,7 @@ async def execute_task_v3(task_id: str) -> None:
                             reasoning_output.problem_type == "web_research"
                             or reasoning_output.needs_search
                         )
+                        and reasoning_output.problem_type != "mixed"  # mixed → coordinator
                     )
 
                     if is_pure_web_research:
@@ -415,6 +515,7 @@ async def execute_task_v3(task_id: str) -> None:
                     reasoning_output.problem_type == "web_research"
                     or reasoning_output.needs_search
                 )
+                and reasoning_output.problem_type != "mixed"   # mixed tasks → coordinator, not graph
                 and not is_memory_query(task.user_input)
             )
 
@@ -757,13 +858,35 @@ async def execute_task_v3(task_id: str) -> None:
             )
             logger.info("preferred_tools_loaded", tools=context["preferred_tools"])
 
-            for step_data in plan:
+            # ── Group steps into parallel/sequential batches ──────────────
+            step_batches = _group_parallel_steps(plan)
+            logger.info(
+                "orchestrator_step_batches",
+                total_steps=len(plan),
+                total_batches=len(step_batches),
+                parallel_batches=sum(1 for b in step_batches if len(b) > 1),
+            )
+
+            # ── Inner coroutine: execute one step with retry/recovery ─────
+            async def _run_step(step_data: dict) -> bool:
+                """
+                Execute a single plan step. Returns True if the step succeeded
+                (or was skipped), False if it hard-failed and the task should abort.
+                Mutates `context`, `task_metrics`, `task_context` in the outer scope.
+                """
+                # Narrow types — task is guaranteed non-None here because we
+                # checked it before entering Phase 4 and would have returned early.
+                assert task is not None, "task must be non-None inside _run_step"
+
                 step_number = step_data["step"]
                 step = steps_by_number.get(step_number)
 
                 if not step:
                     logger.error("orchestrator_step_not_found", step_number=step_number)
-                    continue
+                    return True  # non-fatal — skip missing step
+
+                # step is non-None from here — assert to satisfy type checker
+                assert step is not None
 
                 logger.info("orchestrator_executing_step", step_number=step_number)
                 await ws_manager.emit(
@@ -776,12 +899,9 @@ async def execute_task_v3(task_id: str) -> None:
                     },
                 )
 
-                max_retries = critic.MAX_RETRIES  # keep in sync with CriticAgent
-                retry_count = 0
-                step_succeeded = False
-                # Track which agents have been tried via switch for THIS step.
-                # Passed into AgentSwitcher so it never re-tries a previously
-                # failed agent, preventing A→B→A→B cycling.
+                max_retries              = critic.MAX_RETRIES
+                retry_count              = 0
+                step_succeeded           = False
                 switched_agents_this_step: set = set()
 
                 while retry_count < max_retries and not step_succeeded:
@@ -791,12 +911,11 @@ async def execute_task_v3(task_id: str) -> None:
 
                     try:
                         context["avoid_tools"] = [
-                            t
-                            for t in ["python_executor", "shell_executor"]
+                            t for t in ["python_executor", "shell_executor"]
                             if tool_failure_memory.should_avoid(t)
                         ]
 
-                        t0 = time.time()
+                        t0          = time.time()
                         tool_result = await executor.execute_step(
                             instruction=step.instruction, context=context
                         )
@@ -808,11 +927,11 @@ async def execute_task_v3(task_id: str) -> None:
                             duration_ms=(time.time() - t0) * 1000,
                         )
 
-                        if tool_result.metadata.get("tool_name") in ("web_search", "web_fetch"):
+                        if tool_result.metadata.get("tool_name") in ("web_search", "web_fetch", "news_search", "get_weather"):
                             global_cost_tracker.record_search()
 
-                        step.result = tool_result.output
-                        step.error = tool_result.error
+                        step.result   = tool_result.output
+                        step.error    = tool_result.error
                         step.tool_name = tool_result.metadata.get("tool_name")
                         db.commit()
 
@@ -823,11 +942,9 @@ async def execute_task_v3(task_id: str) -> None:
                         )
 
                         if tool_result.success and tool_result.metadata.get("tool_name"):
-                            tool_failure_memory.reset_failures(
-                                tool_result.metadata["tool_name"]
-                            )
+                            tool_failure_memory.reset_failures(tool_result.metadata["tool_name"])
 
-                        t0 = time.time()
+                        t0         = time.time()
                         evaluation = await critic.evaluate(
                             step_instruction=step.instruction,
                             tool_result=tool_result,
@@ -848,27 +965,25 @@ async def execute_task_v3(task_id: str) -> None:
                             reason=evaluation.reason,
                         )
 
-                        task_metrics["step_traces"].append(
-                            {
-                                "step_number": step_number,
-                                "attempt": retry_count,
-                                "instruction": step.instruction,
-                                "tool_success": tool_result.success,
-                                "error": tool_result.error,
-                                "verdict": evaluation.verdict.value,
-                                "reason": evaluation.reason,
-                                "timestamp": _utcnow().isoformat(),
-                            }
-                        )
+                        task_metrics["step_traces"].append({
+                            "step_number":  step_number,
+                            "attempt":      retry_count,
+                            "instruction":  step.instruction,
+                            "tool_success": tool_result.success,
+                            "error":        tool_result.error,
+                            "verdict":      evaluation.verdict.value,
+                            "reason":       evaluation.reason,
+                            "timestamp":    _utcnow().isoformat(),
+                        })
 
                         # ── PASS ──────────────────────────────────────────
                         if evaluation.verdict == Verdict.PASS:
                             if step.tool_name:
                                 tool_success_memory.record_success(str(step.tool_name))
                             task_metrics["completed_steps"] += 1
-                            step.status = StepStatus.COMPLETED
+                            step.status      = StepStatus.COMPLETED
                             step.completed_at = _utcnow()
-                            step_succeeded = True
+                            step_succeeded   = True
                             feedback_memory.record_feedback(
                                 query=task.user_input,
                                 feedback="good",
@@ -883,16 +998,12 @@ async def execute_task_v3(task_id: str) -> None:
                                     "result": tool_result.output[:300],
                                 },
                             )
-
-                            context[f"step_{step_number}_output"] = tool_result.output
+                            context[f"step_{step_number}_output"]  = tool_result.output
                             context[f"step_{step_number}_success"] = True
 
                             filename = tool_result.metadata.get("filename")
                             if filename and filename not in (task_context.created_files or []):
-                                task_context.created_files = [
-                                    *(task_context.created_files or []),
-                                    filename,
-                                ]
+                                task_context.created_files = [*(task_context.created_files or []), filename]
                                 task_metrics["created_files"].append(filename)
 
                         # ── RETRY ─────────────────────────────────────────
@@ -913,41 +1024,26 @@ async def execute_task_v3(task_id: str) -> None:
                         else:
                             if step.tool_name:
                                 tool_success_memory.record_failure(str(step.tool_name))
-                            logger.error(
-                                "orchestrator_step_failed",
-                                step_number=step_number,
-                                reason=evaluation.reason,
-                            )
+                            logger.error("orchestrator_step_failed", step_number=step_number, reason=evaluation.reason)
                             feedback_memory.record_feedback(
                                 query=task.user_input,
                                 feedback="bad",
                                 answer=evaluation.reason,
                             )
 
-                            # Use recovery_manager directly with step-level info.
-                            # Avoid calling reflection_agent here — task.steps is
-                            # incomplete mid-execution and produces poor analysis.
-                            # Full reflection runs properly in Phase 5 after completion.
                             step_failure_info = {
-                                "what_worked": [],
-                                "what_failed": [evaluation.reason],
-                                "root_causes": [tool_result.error or evaluation.reason],
-                                "lessons": [],
+                                "what_worked":            [],
+                                "what_failed":            [evaluation.reason],
+                                "root_causes":            [tool_result.error or evaluation.reason],
+                                "lessons":                [],
                                 "improvement_suggestions": [evaluation.suggestions or ""],
-                                "pattern_quality": 0.0,
-                                "confidence_updates": {},
+                                "pattern_quality":        0.0,
+                                "confidence_updates":     {},
                             }
                             decision = recovery_manager.decide(step_failure_info)
-                            logger.info(
-                                "recovery_attempt",
-                                action=decision.action,
-                                reason=decision.reason,
-                            )
+                            logger.info("recovery_attempt", action=decision.action, reason=decision.reason)
 
-                            if decision.action in (
-                                "retry",
-                                "retry_with_smaller_prompt",
-                            ):
+                            if decision.action in ("retry", "retry_with_smaller_prompt"):
                                 if decision.action == "retry_with_smaller_prompt":
                                     context["prompt_reduction"] = True
                                 retry_count += 1
@@ -955,121 +1051,131 @@ async def execute_task_v3(task_id: str) -> None:
                                 continue
 
                             elif decision.action == "switch_agent":
-                                switched_result, new_agent = (
-                                    await agent_switcher.switch_and_execute(
-                                        failed_agent="executor",
-                                        instruction=step.instruction,
-                                        context=context,
-                                        already_tried=switched_agents_this_step,
-                                    )
+                                switched_result, new_agent = await agent_switcher.switch_and_execute(
+                                    failed_agent="executor",
+                                    instruction=step.instruction,
+                                    context=context,
+                                    already_tried=switched_agents_this_step,
                                 )
                                 if switched_result:
-                                    step.result = switched_result.output
-                                    step.status = StepStatus.COMPLETED
+                                    step.result       = switched_result.output
+                                    step.status       = StepStatus.COMPLETED
                                     step.completed_at = _utcnow()
-                                    context[f"step_{step_number}_output"] = (
-                                        switched_result.output
-                                    )
+                                    context[f"step_{step_number}_output"]  = switched_result.output
                                     context[f"step_{step_number}_success"] = True
-                                    context["recovered_by_agent"] = new_agent
+                                    context["recovered_by_agent"]          = new_agent
                                     step_succeeded = True
                                     if new_agent:
-                                        # Record the agent that succeeded and
-                                        # ensure it's excluded from future
-                                        # switches on this step (not needed
-                                        # since step_succeeded=True, but kept
-                                        # for completeness).
                                         switched_agents_this_step.add(new_agent)
                                         agent_pref_memory.record_success(
                                             task_description=task.user_input,
                                             agent_name=new_agent,
                                         )
-                                    logger.info(
-                                        "step_recovered_by_agent_switch",
-                                        step=step_number,
-                                        agent=new_agent,
-                                    )
+                                    logger.info("step_recovered_by_agent_switch", step=step_number, agent=new_agent)
                                     db.commit()
                                     break
                                 else:
-                                    # All switch candidates exhausted — hard fail
-                                    logger.error(
-                                        "agent_switcher_exhausted",
-                                        step=step_number,
-                                        tried=list(switched_agents_this_step),
-                                    )
+                                    logger.error("agent_switcher_exhausted", step=step_number, tried=list(switched_agents_this_step))
 
                             elif decision.action == "skip_step":
                                 step.status = StepStatus.SKIPPED
                                 db.commit()
-                                break
+                                return True   # skipped = not a hard failure
 
                             elif decision.action == "abort_task":
                                 _fail_task(task, decision.reason)
                                 db.commit()
-                                finalize_and_export(task_metrics)
-                                global_cost_tracker.complete_task(success=False)
-                                return
+                                if global_cost_tracker.current_task is not None:
+                                    finalize_and_export(task_metrics)
+                                    global_cost_tracker.complete_task(success=False)
+                                return False  # signal caller to abort
 
                             # Hard fail — no recovery succeeded
                             step.status = StepStatus.FAILED
                             _fail_task(task, f"Step {step_number} failed: {evaluation.reason}")
-                            task_metrics["failures"].append(
-                                {
-                                    "step_number": step_number,
-                                    "error": evaluation.reason,
-                                    "category": classify_failure(step.error),
-                                }
-                            )
+                            task_metrics["failures"].append({
+                                "step_number": step_number,
+                                "error":       evaluation.reason,
+                                "category":    classify_failure(step.error),
+                            })
                             db.commit()
-                            finalize_and_export(task_metrics)
-                            global_cost_tracker.complete_task(success=False)
-                            return
+                            if global_cost_tracker.current_task is not None:
+                                finalize_and_export(task_metrics)
+                                global_cost_tracker.complete_task(success=False)
+                            return False
 
                         db.commit()
 
                     except Exception as e:
-                        logger.error(
-                            "orchestrator_step_error",
-                            step_number=step_number,
-                            error=str(e),
-                        )
-                        step.error = str(e)
+                        logger.error("orchestrator_step_error", step_number=step_number, error=str(e))
+                        step.error  = str(e)
                         step.status = StepStatus.FAILED
-                        await ws_manager.emit(
-                            task_id,
-                            {"phase": "failed", "status": "failed", "error": str(e)},
-                        )
+                        await ws_manager.emit(task_id, {"phase": "failed", "status": "failed", "error": str(e)})
                         _fail_task(task, f"Step {step_number} crashed: {e}")
-                        task_metrics["failures"].append(
-                            {
-                                "step_number": step_number,
-                                "error": str(e),
-                                "category": "ORCHESTRATOR_ERROR",
-                            }
-                        )
+                        task_metrics["failures"].append({
+                            "step_number": step_number,
+                            "error":       str(e),
+                            "category":    "ORCHESTRATOR_ERROR",
+                        })
                         db.commit()
-                        finalize_and_export(task_metrics)
-                        global_cost_tracker.complete_task(success=False)
-                        return
+                        if global_cost_tracker.current_task is not None:
+                            finalize_and_export(task_metrics)
+                            global_cost_tracker.complete_task(success=False)
+                        return False
 
                 if not step_succeeded:
-                    logger.error(
-                        "orchestrator_step_exhausted_retries", step_number=step_number
-                    )
+                    logger.error("orchestrator_step_exhausted_retries", step_number=step_number)
                     step.status = StepStatus.FAILED
                     _fail_task(task, f"Step {step_number} exhausted retries")
-                    task_metrics["failures"].append(
-                        {
-                            "step_number": step_number,
-                            "error": "Exhausted retries",
-                            "category": "RETRY_LIMIT_EXCEEDED",
-                        }
-                    )
+                    task_metrics["failures"].append({
+                        "step_number": step_number,
+                        "error":       "Exhausted retries",
+                        "category":    "RETRY_LIMIT_EXCEEDED",
+                    })
                     db.commit()
-                    finalize_and_export(task_metrics)
-                    global_cost_tracker.complete_task(success=False)
+                    # Only finalize if this task hasn't already been aborted
+                    # by another parallel step in the same batch
+                    if global_cost_tracker.current_task is not None:
+                        finalize_and_export(task_metrics)
+                        global_cost_tracker.complete_task(success=False)
+                    return False
+
+                return True   # step succeeded
+
+            # ── Execute batches ───────────────────────────────────────────
+            for batch in step_batches:
+                if cancellation_store.is_cancelled(task_id):
+                    cancellation_store.clear(task_id)
                     return
+
+                if len(batch) == 1:
+                    # Sequential step
+                    ok = await _run_step(batch[0])
+                    if not ok:
+                        return
+                else:
+                    # Parallel batch — fire all steps simultaneously
+                    logger.info(
+                        "orchestrator_parallel_batch",
+                        steps=[s["step"] for s in batch],
+                        count=len(batch),
+                    )
+                    results = await asyncio.gather(
+                        *[_run_step(s) for s in batch],
+                        return_exceptions=True,
+                    )
+                    # If any step signalled a hard failure (False) or raised, abort
+                    for r in results:
+                        if isinstance(r, BaseException):
+                            logger.error("orchestrator_parallel_step_exception", error=str(r))
+                            _fail_task(task, f"Parallel step crashed: {r}")
+                            db.commit()
+                            if global_cost_tracker.current_task is not None:
+                                finalize_and_export(task_metrics)
+                                global_cost_tracker.complete_task(success=False)
+                            return
+                        if r is False:
+                            return   # hard-fail already written by _run_step
 
             # ================================================================
             # PHASE 5: REFLECTION & LEARNING

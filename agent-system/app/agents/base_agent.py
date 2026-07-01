@@ -1,7 +1,7 @@
+import structlog
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
-import structlog
 
 logger = structlog.get_logger()
 
@@ -50,8 +50,7 @@ class BaseAgent(ABC):
         """Load previously persisted stats from AgentPerformanceMemory."""
         try:
             from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
-            mem = AgentPerformanceMemory()
-            saved = mem.get(self.name)
+            saved = AgentPerformanceMemory().get(self.name)
             if saved:
                 self.call_count    = int(saved.get("calls", 0))
                 self.success_count = int(saved.get("successes", 0))

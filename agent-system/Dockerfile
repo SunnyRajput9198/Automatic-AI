@@ -12,16 +12,13 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements
 COPY requirements.txt .
 RUN pip install uv
-RUN uv pip install --system --no-cache \
-    torch==2.7.0 \
-    torchvision \
-    --index-url https://download.pytorch.org/whl/cpu
+
 RUN uv pip install --system --no-cache -r requirements.txt
 
 # Copy application
 COPY . .
 
-# Create directories for Week 1 + Week 2
+
 RUN mkdir -p /app/sandbox && chmod 755 /app/sandbox
 RUN mkdir -p /app/workspace/shared && chmod 755 /app/workspace
 RUN mkdir -p /app/traces && chmod 755 /app/traces

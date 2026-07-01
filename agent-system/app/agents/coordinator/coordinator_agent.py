@@ -2,7 +2,7 @@ import structlog
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 import asyncio
-from app.agents.base_agent import BaseAgent, AgentResult
+from app.agents.base_agent import BaseAgent
 from app.agents.coordinator.task_router import TaskRouter
 from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
 from app.utils.llm import call_llm_with_system
@@ -78,9 +78,7 @@ AGENTS SUPPORTED:
         agent_results = []
         execution_context = context.copy()
 
-        # ==================================================
-        # 🔥 DAY 3: PARALLEL EXECUTION
-        # ==================================================
+        # ── Parallel execution ────────────────────────────────────────────
         if routing.execution_mode == "parallel":
             logger.info("coordinator_parallel_execution")
 
@@ -127,9 +125,6 @@ AGENTS SUPPORTED:
                     execution_context[f"{role}_output"] = result.output
                     execution_context[f"{role}_success"] = True
 
-        # ==================================================
-        # 🧭 SEQUENTIAL EXECUTION (Day 1–2 behavior)
-        # ==================================================
         else:
 
             for agent_role in routing.agents_needed:

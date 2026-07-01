@@ -68,7 +68,7 @@ class AgentPreferenceMemory:
         Build a stable key from the task description.
         - Lowercased and stripped of punctuation
         - Stopwords removed so 'research the FastAPI' and
-          'research FastAPI' map to the same key
+            'research FastAPI' map to the same key
         - First 6 meaningful words used (more specific than 4)
         """
         words = re.sub(r"[^a-z0-9\s]", "", task.lower()).split()

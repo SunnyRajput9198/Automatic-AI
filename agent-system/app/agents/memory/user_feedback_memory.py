@@ -88,9 +88,6 @@ class UserFeedbackMemory:
             "positive_rate": (round(good / total, 2) if total > 0 else 0),
         }
 
-    def get_recent_feedback(self, limit: int = 10) -> List[Dict]:
-        return self.feedback[-limit:]
-
     def get_feedback_for_query(self, query: str) -> List[Dict]:
         query_lower = query.lower()
 

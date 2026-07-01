@@ -484,7 +484,6 @@ class WebSearchTool(Tool):
     ]
 
     def __init__(self):
-        self._ss   = _SemanticScholarAPI()
         self._wiki = _WikipediaRESTAPI()
         self._ddg  = DuckDuckGoSearchAPIWrapper(
             region="wt-wt", safesearch="moderate", time="y", max_results=5
@@ -550,21 +549,16 @@ class WebSearchTool(Tool):
         q = query.lower()
 
         try:
-            if self._is_academic(q) or self._is_technical(q):
-                strategy = "semantic_scholar+wikipedia+duckduckgo"
-                results = await asyncio.gather(
-                    self._ss.search(query),
-                    self._wiki.search(query),
-                    self._ddg_search(query),
-                    return_exceptions=True,
-                )
-            else:
-                strategy = "wikipedia+duckduckgo"
-                results = await asyncio.gather(
-                    self._wiki.search(query),
-                    self._ddg_search(query),
-                    return_exceptions=True,
-                )
+            # WebSearchTool uses Wikipedia + DuckDuckGo only.
+            # SemanticScholarTool is a separate bound tool for academic queries.
+            # Removing Semantic Scholar from this path eliminates rate-limit
+            # issues when multiple web_search calls fire in parallel.
+            strategy = "wikipedia+duckduckgo"
+            results = await asyncio.gather(
+                self._wiki.search(query),
+                self._ddg_search(query),
+                return_exceptions=True,
+            )
 
             logger.info("web_search_strategy", strategy=strategy)
 

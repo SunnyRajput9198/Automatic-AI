@@ -60,6 +60,10 @@ AVAILABLE TOOLS:
   * Returns headline, source, published date, and URL
   * Use for: "latest news about X", "today's headlines", "recent updates on X", "breaking news"
   * Prefer this over web_search when the query is clearly about current events or news
+- get_weather: Get current temperature and weather for any city
+  * Returns temperature (°C), feels-like, wind speed, humidity, conditions
+  * ALWAYS use this for: "current temperature in X", "weather in X", "what is the temp in X"
+  * Free, no API key, real-time data from Open-Meteo
 
 🐍 CODE EXECUTION:
 - python_executor: Run Python code in a sandbox
@@ -94,16 +98,52 @@ RESPONSE FORMAT (JSON only):
     "steps": [
         {
         "step": 1,
-        "instruction": "Use web_search to find Python programming tutorials",
-        "reasoning": "User wants to search for online tutorials"
+        "instruction": "Use news_search to find latest AI news",
+        "depends_on": [],
+        "reasoning": "Independent search, runs first"
         },
         {
         "step": 2,
-        "instruction": "Save the top 3 results to a file called tutorials.txt using file_write",
-        "reasoning": "Persist the results for later reference"
+        "instruction": "Use web_search to find current temperature in Delhi",
+        "depends_on": [],
+        "reasoning": "Independent search, can run in parallel with step 1"
+        },
+        {
+        "step": 3,
+        "instruction": "Use file_write to save combined findings to report.txt",
+        "depends_on": [1, 2],
+        "reasoning": "Needs output from both searches before writing"
         }
     ]
 }
+
+DEPENDENCY RULES:
+- depends_on: list of step numbers this step must wait for (empty list = no dependencies)
+- Steps with no dependencies run in PARALLEL with each other automatically
+- Steps that read outputs from previous steps MUST declare them in depends_on
+- Web searches are almost always independent (depends_on: [])
+- file_write/file_read that use previous results MUST depend on those steps
+- python_executor that processes previous output MUST depend on those steps
+
+IMPORTANT — HOW TO USE PREVIOUS STEP OUTPUTS IN file_write:
+When writing a summary/report using results from previous steps, the file_write instruction
+MUST be explicit about what to write. Do NOT say "Input: outputs from steps 1, 2, 3, 4".
+Instead write the actual content instruction like this:
+
+GOOD:
+Step 5: Use file_write to save findings to results.txt with content:
+  "AI News: {step_1_output summary}
+   Delhi Temperature: {step_2_output}
+   Delhi Population: {step_3_output summary}
+   Capital of France: {step_4_output summary}"
+
+The executor will fill in the actual step outputs from context automatically.
+Never make a step depend on searching again — if data was already fetched, just write it.
+
+EXAMPLES of correct depends_on:
+- Two independent searches: both have depends_on: []  → run in parallel
+- Search then save: search has [], file_write has [1]  → sequential
+- Three parallel searches then one summary: all searches [], summary has [1,2,3]
 
 BAD EXAMPLES:
 ❌ "Deeply understand the codebase"
@@ -133,12 +173,12 @@ COMPARISON QUERIES (important):
 - NEVER break comparison queries into separate searches for X and Y
 - ONE search covers both topics
 
-MULTI-TOPIC QUERIES:
-- "what is X and Y" → ONE web_search covering both
-- "explain X with examples" → ONE web_search, ONE file_write max
-- Keep plans to 2 steps maximum for simple research tasks:
-    Step 1: web_search
-    Step 2: file_write (optional)
+MULTI-TOPIC QUERIES — USE PARALLEL STEPS:
+- "what is X and Y" → TWO separate web_search steps, each with depends_on: []
+- "news about AI and temperature in Delhi" → separate steps, each independent
+- "population of Delhi and capital of France" → two separate steps, NOT one combined query
+- Each topic gets its own step so they run in parallel automatically
+- Only combine into one step if the facts are very closely related (e.g. "compare X and Y")
 
 SESSION HISTORY contains summaries of previous tasks.
 
@@ -208,20 +248,31 @@ RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
         self.model = model
 
     def _validate_steps(self, steps: list, log_key: str) -> List[Dict]:
-        """Validate and normalize raw step dicts from the LLM."""
+        """Validate and normalize raw step dicts from the LLM.
+        Preserves depends_on for DAG-based parallel execution.
+        """
         validated: List[Dict] = []
         for idx, step in enumerate(steps, start=1):
             instruction = step.get("instruction")
             if not instruction:
                 logger.warning(f"{log_key}_invalid_step", step=step)
                 continue
-            validated.append(
-                {
-                    "step": step.get("step", idx),
-                    "instruction": instruction,
-                    "reasoning": step.get("reasoning", ""),
-                }
-            )
+
+            step_num = step.get("step", idx)
+
+            # Normalize depends_on: must be a list of ints
+            raw_deps = step.get("depends_on", [])
+            if isinstance(raw_deps, list):
+                deps = [int(d) for d in raw_deps if str(d).isdigit()]
+            else:
+                deps = []
+
+            validated.append({
+                "step":       step_num,
+                "instruction": instruction,
+                "reasoning":  step.get("reasoning", ""),
+                "depends_on": deps,
+            })
         return validated
 
     async def _call_llm(
@@ -241,10 +292,10 @@ RESPOND ONLY WITH JSON. NO MARKDOWN, NO EXPLANATIONS.
         plan_data = extract_json(response, context=log_context)
         if not plan_data:
             logger.error(f"{log_context}_json_error",
-                         error="No valid JSON found", response=response[:500])
+                        error="No valid JSON found", response=response[:500])
             raise ValueError(f"Failed to parse {log_context} JSON: No valid JSON found")
 
-        steps = plan_data.get("steps", [])[:10]
+        steps = plan_data.get("steps", [])[:10]# max 10 steps
         validated = self._validate_steps(steps, log_context)
         if not validated:
             raise ValueError(f"{log_context} produced no valid steps")

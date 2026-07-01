@@ -30,7 +30,7 @@ ddgs
 
 # ML / Embeddings
 scikit-learn==1.8.0
-sentence-transformers
+openai
 xmltodict
 # Utils
 python-dotenv==1.2.2

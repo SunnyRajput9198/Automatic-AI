@@ -24,9 +24,8 @@ class ConfidenceMemory:
     composite-scored candidates.
     """
 
-    def __init__(self, db: Session, model: str = "claude-haiku-4-5-20251001"):
+    def __init__(self, db: Session):
         self.db = db
-        self.model = model
 
     # ------------------------------------------------------------------
     # Store

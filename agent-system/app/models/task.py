@@ -14,7 +14,6 @@ class TaskStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED    = "FAILED"
 
-
 class StepStatus(str, Enum):
     PENDING   = "PENDING"
     RUNNING   = "RUNNING"
@@ -22,11 +21,6 @@ class StepStatus(str, Enum):
     FAILED    = "FAILED"
     SKIPPED   = "SKIPPED"
     RETRYING  = "RETRYING"
-
-
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
 
 class Task(Base):
     """

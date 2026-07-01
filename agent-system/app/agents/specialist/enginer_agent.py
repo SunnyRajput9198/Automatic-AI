@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.tools.python_tool import RestrictedPythonExecutor
 from app.tools.shell_tool import ShellExecutor
 from app.tools.file_tools import (
-    FileReadTool, FileWriteTool, FileListTool, FileDeleteTool
+    FileReadTool, FileWriteTool, FileListTool, FileDeleteTool, FileAppendTool
 )
 
 logger = structlog.get_logger()
@@ -34,11 +34,12 @@ You can:
 
 When given a task, determine the best approach:
 1. python_executor — run Python code (calculations, data processing, generating files)
-2. file_write — save content to a .txt file
-3. file_read — read an existing file
-4. file_list — list files in the workspace
-5. file_delete — delete a file
-6. shell_executor — run safe shell commands (ls, cat, grep, etc.)
+2. file_write — save content to a .txt file (overwrites existing)
+3. file_append — append content to an existing file
+4. file_read — read an existing file
+5. file_list — list files in the workspace
+6. file_delete — delete a file
+7. shell_executor — run safe shell commands (ls, cat, grep, etc.)
 
 RESPONSE FORMAT (JSON only):
 {
@@ -66,6 +67,7 @@ RESPOND ONLY WITH JSON."""
                 "python_executor",
                 "file_read",
                 "file_write",
+                "file_append",
                 "file_list",
                 "file_delete",
                 "shell_executor",
@@ -73,13 +75,13 @@ RESPOND ONLY WITH JSON."""
         )
         self.model = model
 
-        # Initialise real tools
         fm = FileManager(base_dir=settings.WORKSPACE_DIR)
         self._tools: Dict[str, Any] = {
             "python_executor": RestrictedPythonExecutor(),
             "shell_executor":  ShellExecutor(),
             "file_read":       FileReadTool(fm),
             "file_write":      FileWriteTool(fm),
+            "file_append":     FileAppendTool(fm),
             "file_list":       FileListTool(fm),
             "file_delete":     FileDeleteTool(fm),
         }

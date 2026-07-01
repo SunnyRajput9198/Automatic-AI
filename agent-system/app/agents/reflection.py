@@ -1,6 +1,6 @@
 import json
 import structlog
-from typing import Dict, Any, List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel
 from app.utils.json_parser import extract_json
 

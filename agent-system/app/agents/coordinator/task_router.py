@@ -1,9 +1,8 @@
 import structlog
-import json
-from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
-from typing import List, Dict, Any
+from typing import List
 from pydantic import BaseModel
 from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
+from app.agents.memory.agent_performance_memory import AgentPerformanceMemory
 from app.utils.llm import call_openai_with_tools
 
 logger = structlog.get_logger()
@@ -123,17 +122,15 @@ class TaskRouter:
         # Avoids locking ALL tasks to the first agent that hits 80% success.
         best_agent_for_task = None
         best_rate = 0.0
-        task_lower_check = task.lower()
         for agent_name, stats in self.performance_memory.all().items():
             role = stats.get("role", "")
             success_rate = stats.get("success_rate", 0)
             if success_rate <= best_rate or success_rate < 0.8:
                 continue
-            # Only promote this agent if its role matches the task's signal
             role_fits = (
-                (role == "researcher" and any(k in task_lower_check for k in self.RESEARCHER_KEYWORDS))
-                or (role == "engineer"  and any(k in task_lower_check for k in self.ENGINEER_KEYWORDS))
-                or (role == "writer"    and any(k in task_lower_check for k in self.WRITER_KEYWORDS))
+                (role == "researcher" and any(k in task_lower for k in self.RESEARCHER_KEYWORDS))
+                or (role == "engineer"  and any(k in task_lower for k in self.ENGINEER_KEYWORDS))
+                or (role == "writer"    and any(k in task_lower for k in self.WRITER_KEYWORDS))
             )
             if role_fits:
                 best_rate = success_rate

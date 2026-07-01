@@ -3,22 +3,17 @@ import re
 import sys
 import time
 import structlog
-import app.tools
-import app.tools.base
-import app.tools.web_search
 import asyncio
-import app
-import app.utils
-import app.utils.json_parser
-import app.utils.llm
 from app.tools.base import ToolResult as _TR
 from langchain_core.runnables import RunnableConfig
-from typing import cast
+from typing import cast, Literal
 from app.utils.llm import call_openai_with_system
 from app.utils.file_manager import FileManager
+from app.agents.critic import CriticAgent,Verdict
+from app.agents.planner import PlannerAgent
+from app.agents.specialist.researcher_agent import ResearcherAgent
 from app.core.config import settings
 from typing import TypedDict, Optional, List, cast
-
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -26,53 +21,18 @@ logger = structlog.get_logger()
 
 RESEARCHER_TIMEOUT_SEC = 35
 TASK_TIMEOUT_SEC       = 90          # hard cap across all retries
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Checkpointer factory
 # ─────────────────────────────────────────────────────────────────────────────
-
 async def get_checkpointer() -> AsyncPostgresSaver:
-    """
-    Return an initialised AsyncPostgresSaver connected to the project's
-    Postgres database.  Called once per graph invocation.
-
-    AsyncPostgresSaver uses psycopg3 under the hood and creates its own
-    connection pool, so it is safe to call in an async context without
-    blocking the event loop.
-    """
-    async with AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL) as checkpointer:
-        # Ensure the checkpoint tables exist (idempotent — safe to call every time)
-        await checkpointer.setup()
-        return checkpointer
-
-def _load(path: str, name: str):
-    if name in sys.modules:
-        return sys.modules[name]
-    spec = _ilu.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load module '{name}' from '{path}'")
-    mod = _ilu.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-# Load only the files we actually need — skip agents/__init__.py entirely
-_base   = _load("app/agents/base_agent.py",                          "app.agents.base_agent")
-_ra     = _load("app/agents/specialist/researcher_agent.py",         "app.agents.specialist.researcher_agent")
-_critic = _load("app/agents/critic.py",                              "app.agents.critic")
-_plan   = _load("app/agents/planner.py",                             "app.agents.planner")
-
-ResearcherAgent = _ra.ResearcherAgent
-CriticAgent     = _critic.CriticAgent
-Verdict         = _critic.Verdict
-PlannerAgent    = _plan.PlannerAgent
+    """Not used directly — see run_research_graph which manages the context."""
+    raise NotImplementedError("Use run_research_graph directly")
 
 class AgentState(TypedDict):
     # ── Input ──────────────────────────────────────────────────────────────
     task:           str
     session_id:     Optional[str]
-    started_at:     float            # unix timestamp — for total time cap
+    started_at:     float            
 
     # ── Planner outputs ────────────────────────────────────────────────────
     plan_steps:     List[str]        # all step instructions from planner
@@ -85,7 +45,7 @@ class AgentState(TypedDict):
     sources_used:   str
 
     # ── Critic fields ──────────────────────────────────────────────────────
-    critic_verdict:     str          # "PASS" | "RETRY" | "FAIL"
+    critic_verdict:    Literal["PASS","RETRY","FAIL",""]      
     critic_reason:      str
     critic_suggestions: str
     retry_count:        int
@@ -103,10 +63,9 @@ class AgentState(TypedDict):
 # Agent singletons
 # ─────────────────────────────────────────────────────────────────────────────
 
-_planner      = PlannerAgent()
-_researcher   = ResearcherAgent()
-_critic_agent = CriticAgent()
-
+planner      = PlannerAgent()
+researcher   = ResearcherAgent()
+critic_agent = CriticAgent()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Nodes
@@ -164,7 +123,7 @@ async def planner_node(state: AgentState) -> AgentState:
         return cleaned if len(cleaned) >= 5 else instruction
 
     try:
-        steps = await _planner.plan(state["task"])
+        steps = await planner.plan(state["task"])
         instructions = [s["instruction"] for s in steps]
 
         # Use cleaned first instruction as the search query
@@ -255,7 +214,7 @@ async def researcher_node(state: AgentState) -> AgentState:
 
     try:
         result = await asyncio.wait_for(
-            _researcher.execute(task=effective_task),
+            researcher.execute(task=effective_task),
             timeout=RESEARCHER_TIMEOUT_SEC,
         )
     except asyncio.TimeoutError:
@@ -312,7 +271,7 @@ async def critic_node(state: AgentState) -> AgentState:
         },
     )
 
-    evaluation = await _critic_agent.evaluate(
+    evaluation = await critic_agent.evaluate(
         step_instruction=state["task"],
         tool_result=tool_result,
         retry_count=state.get("retry_count", 0),
@@ -516,31 +475,33 @@ def _build_graph_definition() -> StateGraph:
 # ── Compiled singleton (no checkpointer — used when checkpointing is off) ────
 # loop_v3 calls run_research_graph() which attaches the checkpointer per call.
 _graph_definition = _build_graph_definition()
-research_graph    = _graph_definition.compile()   # fallback / test usage
-
+research_graph    = _graph_definition.compile()   # fallback / test usage without checkpointer
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Checkpointed invocation helper — used by loop_v3
 # ─────────────────────────────────────────────────────────────────────────────
-
-
 async def run_research_graph(
     initial_state: AgentState,
     thread_id: str,
 ) -> AgentState:
     """
     Invoke the research graph with a PostgresSaver checkpointer.
+    The async context manager is held open for the duration of the graph run
+    so the connection stays alive across all node transitions.
     """
-    try:
-        checkpointer = await get_checkpointer()
-        compiled     = _graph_definition.compile(checkpointer=checkpointer)
-        config       = RunnableConfig(configurable={"thread_id": thread_id})
+    conn_string = settings.DATABASE_URL.replace("postgresql+psycopg://", "postgresql://")
 
-        logger.info("graph_invoking_with_checkpoint", thread_id=thread_id)
-        result = cast(AgentState, await compiled.ainvoke(initial_state, config=config))
-        logger.info("graph_completed_with_checkpoint", thread_id=thread_id,
-                    verdict=result.get("critic_verdict"))
-        return result
+    try:
+        async with AsyncPostgresSaver.from_conn_string(conn_string) as checkpointer:
+            await checkpointer.setup()
+            compiled = _graph_definition.compile(checkpointer=checkpointer)
+            config   = RunnableConfig(configurable={"thread_id": thread_id})
+
+            logger.info("graph_invoking_with_checkpoint", thread_id=thread_id)
+            result = cast(AgentState, await compiled.ainvoke(initial_state, config=config))
+            logger.info("graph_completed_with_checkpoint",
+                        thread_id=thread_id, verdict=result.get("critic_verdict"))
+            return result
 
     except Exception as e:
         logger.warning(
@@ -578,3 +539,10 @@ def make_initial_state(task: str, session_id: Optional[str] = None) -> AgentStat
         confidence=0.0,
         errors=[],
     )
+# if __name__ == "__main__":
+#     # Save visualization as PNG
+#     png_bytes = research_graph.get_graph().draw_mermaid_png()
+#     with open("graph.png", "wb") as f:
+#         f.write(png_bytes)
+
+#     print("Graph visualization saved as graph.png")

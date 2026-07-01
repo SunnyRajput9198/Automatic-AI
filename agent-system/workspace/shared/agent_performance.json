@@ -2,11 +2,11 @@
   "researcher_001": {
     "name": "researcher_001",
     "role": "researcher",
-    "calls": 3,
-    "successes": 3,
+    "calls": 15,
+    "successes": 15,
     "failures": 0,
     "success_rate": 1.0,
-    "trust_score": 0.79
+    "trust_score": 1.0
   },
   "engineer_001": {
     "name": "engineer_001",
