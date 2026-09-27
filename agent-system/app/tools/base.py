@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import structlog
 
 logger = structlog.get_logger()
@@ -12,7 +12,29 @@ class ToolResult(BaseModel):
     success: bool
     output: str
     error: Optional[str] = None
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+def classify_tool_failure(error: Optional[str], status_code: Optional[int] = None) -> str:
+    """Normalize common upstream/tool errors without storing sensitive payloads."""
+    message = (error or "").lower()
+    if status_code in (401, 403) or "unauthorized" in message or "authentication" in message:
+        return "AUTHENTICATION_FAILURE"
+    if status_code == 429 or "rate limit" in message or "quota" in message:
+        return "RATE_LIMIT"
+    if status_code in (408, 504) or "timeout" in message or "timed out" in message:
+        return "TIMEOUT"
+    if status_code and status_code >= 500 or "http 5" in message or "provider error" in message:
+        return "PROVIDER_5XX"
+    if any(word in message for word in ("connect", "network", "dns", "ssl", "handshake")):
+        return "NETWORK_ERROR"
+    if "unsupported" in message or "not supported" in message:
+        return "UNSUPPORTED_OPERATION"
+    if "no results" in message or "not found" in message or "empty" in message:
+        return "EMPTY_RESULT"
+    if status_code in (400, 422) or "invalid request" in message:
+        return "INVALID_REQUEST"
+    return "TOOL_ERROR"
 
 
 # ABC = Abstract Base Class

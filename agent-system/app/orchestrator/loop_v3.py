@@ -1,4 +1,5 @@
 import asyncio
+import re
 import uuid
 import structlog
 from datetime import datetime, timezone
@@ -9,7 +10,6 @@ from pathlib import Path
 from app.utils.reference_resolver import ReferenceResolver
 from app.agents.memory.qdrant_memory import QdrantMemory
 from app.utils.websocket_manager import cancellation_store
-from app.orchestrator.graph import research_graph, run_research_graph, make_initial_state as make_graph_state
 from app.orchestrator.recovery_manager import RecoveryManager
 from app.db.session import get_db_context
 from app.models.task import Task, Step, TaskStatus, StepStatus
@@ -17,8 +17,7 @@ from app.models.memory import TaskContext
 from app.utils.websocket_manager import ws_manager
 from app.agents.planner import PlannerAgent
 from app.agents.executor import ExecutorAgent
-from app.agents.critic import CriticAgent, Verdict
-from app.agents.coordinator.coordinator_agent import CoordinatorAgent
+from app.agents.critic import CriticAgent, CriticResult, Verdict
 from app.agents.specialist.researcher_agent import ResearcherAgent
 from app.agents.specialist.enginer_agent import EngineerAgent
 from app.agents.specialist.writer_agent import WriterAgent
@@ -26,14 +25,89 @@ from app.orchestrator.agent_switcher import AgentSwitcher
 from app.agents.memory.agent_preference_memory import AgentPreferenceMemory
 from app.agents.reasoner import ReasonerAgent, ReasoningOutput
 from app.agents.reflection import ReflectionAgent
-from app.agents.search_decider import SearchDecider
 from app.agents.confidence_memory import ConfidenceMemory
 from app.utils.cost_tracker import global_cost_tracker
 from app.agents.memory.tool_success_memory import ToolSuccessMemory
 from app.agents.memory.user_feedback_memory import UserFeedbackMemory
 from app.agents.memory.tool_failure_memory import ToolFailureMemory
+from app.utils.llm import call_openai_with_system
+from app.core.config import settings
+from app.orchestrator.research import (
+    ResearchPlan, ResearchSufficiencyReviewer, compact_research_evidence, normalize_research_key,
+    research_stop_reason,
+)
 
 logger = structlog.get_logger()
+
+
+def _tool_evidence(wrapper: str, result) -> Dict[str, Any]:
+    metadata = result.metadata or {}
+    status = metadata.get("validation_status") or ("success" if result.success else "failed")
+    source_types = {
+        "github": "repository_api", "get_weather": "weather_api",
+        "news_search": "news", "semantic_scholar_search": "academic_index",
+        "web_search": "web_search", "web_fetch": "web_page",
+        "wikipedia_search": "encyclopedia", "python_executor": "local_computation",
+    }
+    return {
+        "source": metadata.get("source", wrapper),
+        "source_type": metadata.get("source_type", source_types.get(wrapper, "tool")),
+        "wrapper": wrapper,
+        "query": metadata.get("query") or metadata.get("city") or metadata.get("owner"),
+        "source_url": metadata.get("source_url"),
+        "retrieved_at": metadata.get("retrieved_at") or datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "failure_type": metadata.get("failure_type"),
+        "fallback_from": metadata.get("fallback_from"),
+        "provider_attempts": metadata.get("provider_attempts", []),
+        "result": result.output[:8000] if result.success or status == "unverified" else "",
+        "extracted_information": result.output[:8000] if result.success else "",
+        "error": result.error if not result.success or status == "unverified" else None,
+    }
+
+
+def _format_evidence_fallback(evidence: list, research_state: Optional[dict] = None) -> str:
+    """Return attributed raw findings if the synthesis model is unavailable."""
+    sections = []
+    for item in evidence:
+        for attempt in item.get("attempts", []):
+            if attempt.get("status") == "success" and attempt.get("result", "").strip():
+                source = attempt.get("source") or attempt.get("wrapper") or "unknown source"
+                sections.append(f"Source: {source} ({attempt.get('wrapper')})\n{attempt['result'][:1800]}")
+    if not sections:
+        answer = "I could not produce a verified answer because the selected information sources failed."
+    else:
+        answer = "I retrieved the following information, but the synthesis step was unavailable:\n\n" + "\n\n".join(sections[:6])
+    failures = []
+    for item in evidence:
+        for attempt in item.get("attempts", []):
+            if attempt.get("status") != "success":
+                failures.append(f"{attempt.get('wrapper', 'source')}: {attempt.get('failure_type') or attempt.get('error') or 'failed'}")
+    if failures:
+        answer += "\n\nUnavailable sources: " + "; ".join(dict.fromkeys(failures))
+    if research_state:
+        if research_state.get("unresolved_questions"):
+            answer += "\n\nUnresolved questions: " + "; ".join(research_state["unresolved_questions"])
+        if research_state.get("stopping_reason"):
+            answer += f"\nResearch stopped because: {research_state['stopping_reason']}"
+    return answer
+
+
+def _synthesis_has_grounded_links(answer: str, evidence: list) -> bool:
+    """Reject synthesized citations whose URLs were not present in tool output."""
+    cited = set(re.findall(r'https?://[^\s)\]>"}]+', answer or ""))
+    if not cited:
+        return True
+    retrieved = set()
+    for item in evidence:
+        for attempt in item.get("attempts", []):
+            if attempt.get("status") != "success":
+                continue
+            if attempt.get("source_url"):
+                retrieved.add(str(attempt["source_url"]).rstrip(".,;"))
+            for url in re.findall(r'https?://[^\s)\]>"}]+', attempt.get("result", "")):
+                retrieved.add(url.rstrip(".,;"))
+    return all(url.rstrip(".,;") in retrieved for url in cited)
 
 # ---------------------------------------------------------------------------
 # Keywords that indicate a user is asking about session/memory history.
@@ -232,6 +306,7 @@ async def execute_task_v3(task_id: str) -> None:
         "retries": 0,
         "failures": [],
         "step_traces": [],
+        "llm_attempts": [],
         "memories_used": [],
         "created_files": [],
         "reasoning_used": False,
@@ -251,7 +326,6 @@ async def execute_task_v3(task_id: str) -> None:
     reflection_agent = ReflectionAgent()
     tool_success_memory = ToolSuccessMemory()
     tool_failure_memory = ToolFailureMemory()
-    search_decider = SearchDecider()
     feedback_memory = UserFeedbackMemory()
     recovery_manager = RecoveryManager()
     agent_pref_memory = AgentPreferenceMemory()
@@ -261,7 +335,6 @@ async def execute_task_v3(task_id: str) -> None:
         "engineer": EngineerAgent(),
         "writer": WriterAgent(),
     }
-    coordinator = CoordinatorAgent(week4_agents)
     agent_switcher = AgentSwitcher(week4_agents)
     qdrant_memory = QdrantMemory()
 
@@ -422,240 +495,10 @@ async def execute_task_v3(task_id: str) -> None:
             except Exception as e:
                 logger.error("orchestrator_reasoning_failed", error=str(e))
 
-            # ================================================================
-            # PHASE 0b: MULTI-AGENT COORDINATION
-            # ================================================================
-            try:
-                preferred_agent = agent_pref_memory.get_preferred_agent(task.user_input)
-                if preferred_agent:
-                    context["preferred_agent"] = preferred_agent
-                    logger.info("preferred_agent_applied", agent=preferred_agent)
-
-                if not is_memory_query(task.user_input):
-                    # Skip coordinator for pure web_research — Phase 0c (research_graph)
-                    # handles those tasks end-to-end and produces better results.
-                    is_pure_web_research = (
-                        reasoning_output is not None
-                        and (
-                            reasoning_output.problem_type == "web_research"
-                            or reasoning_output.needs_search
-                        )
-                        and reasoning_output.problem_type != "mixed"  # mixed → coordinator
-                    )
-
-                    if is_pure_web_research:
-                        logger.info(
-                            "skipping_coordination_for_web_research",
-                            task=task.user_input,
-                        )
-                        await ws_manager.emit(
-                            task_id, {"phase": "coordination", "status": "skipped"}
-                        )
-                    else:
-                        logger.info("orchestrator_coordination_phase")
-
-                        coordination_result = await coordinator.coordinate(
-                            task.user_input, context=context
-                        )
-                        logger.info(
-                            "coordination_result_debug",
-                            success=coordination_result.success,
-                            successful_agents=coordination_result.successful_agents,
-                            final_output=coordination_result.final_output[:500],
-                        )
-                        context.update(
-                            {
-                                "reasoning": reasoning_dict,
-                                "week4_output": coordination_result.final_output,
-                            }
-                        )
-                        task_metrics["week4_agents_used"] = coordination_result.total_agents
-                        task_metrics["week4_successful_agents"] = (
-                            coordination_result.successful_agents
-                        )
-                        if coordination_result.success and task.session_id:
-                            qdrant_memory.store_memory(
-                                session_id=task.session_id,
-                                query=task.user_input,
-                                result=coordination_result.final_output,
-                            )
-                        await ws_manager.emit(
-                            task_id,
-                            {
-                                "phase": "coordination",
-                                "status": "completed",
-                                "agents_used": coordination_result.total_agents,
-                            },
-                        )
-                else:
-                    logger.info(
-                        "skipping_coordination_for_memory_query",
-                        task=task.user_input,
-                    )
-                    await ws_manager.emit(
-                        task_id, {"phase": "coordination", "status": "completed"}
-                    )
-
-                if cancellation_store.is_cancelled(task_id):
-                    cancellation_store.clear(task_id)
-                    return
-            except Exception as e:
-                logger.error("orchestrator_coordination_failed", error=str(e))
-
-            # ================================================================
-            # PHASE 0c: RESEARCH GRAPH (web_research tasks)
-            # Runs research_graph (Planner → Researcher → Critic with retry)
-            # when the reasoner identifies a web research task.
-            # Result is injected into context["week4_output"] so Phase 3
-            # planning and Phase 5 session history both see it.
-            # ================================================================
-            is_web_research = (
-                reasoning_output is not None
-                and (
-                    reasoning_output.problem_type == "web_research"
-                    or reasoning_output.needs_search
-                )
-                and reasoning_output.problem_type != "mixed"   # mixed tasks → coordinator, not graph
-                and not is_memory_query(task.user_input)
-            )
-
-            if is_web_research:
-                logger.info("orchestrator_research_graph_phase", task=task.user_input[:80])
-                try:
-                    t0 = time.time()
-
-                    # ── Session-aware task enrichment ────────────────────────
-                    # If session history has prior research, prepend it to the
-                    # graph task so the planner/synthesizer can use it directly
-                    # instead of searching for the same topic again.
-                    graph_task = task.user_input
-                    session_ctx = context.get("session_history", [])
-                    if session_ctx:
-                        prior_outputs = "\n\n".join(
-                            f"Previous task: {h['task']}\nFindings: {h['output'][:600]}"
-                            for h in session_ctx
-                            if h.get("output", "").strip()
-                        )
-                        if prior_outputs:
-                            graph_task = (
-                                f"{task.user_input}\n\n"
-                                f"SESSION CONTEXT (use this to answer, do not search for it again):\n"
-                                f"{prior_outputs[:1200]}"
-                            )
-                            logger.info(
-                                "research_graph_enriched_with_session",
-                                prior_tasks=len(session_ctx),
-                            )
-
-                    graph_state = await run_research_graph(
-                        initial_state=make_graph_state(
-                            task=graph_task,
-                            session_id=task.session_id,
-                        ),
-                        thread_id=task_id,
-                    )
-                    elapsed = round(time.time() - t0, 2)
-
-                    logger.info(
-                        "orchestrator_research_graph_completed",
-                        verdict=graph_state.get("critic_verdict"),
-                        confidence=graph_state.get("confidence"),
-                        num_results=graph_state.get("num_results", 0),
-                        retries=graph_state.get("retry_count", 0),
-                        duration=elapsed,
-                    )
-
-                    # Inject graph output into context so planner / executor
-                    # and session history all see the research results.
-                    graph_output = graph_state.get("final_output", "")
-                    if graph_output:
-                        context["week4_output"]     = graph_output
-                        context["search_results"]   = graph_state.get("search_results", "")
-                        context["graph_verdict"]    = graph_state.get("critic_verdict", "")
-                        context["graph_confidence"] = graph_state.get("confidence", 0.0)
-                        context["graph_query"]      = graph_state.get("search_query", "")
-
-                        # Persist the research as a completed step so the task
-                        # has at least one trackable step in the DB.
-                        # Store enough of the output that the file confirmation
-                        # line ("wrote N characters to filename.txt") is included.
-                        step_result = graph_output
-                        if len(step_result) > 4000:
-                            # Keep the end (where the file confirmation is) + beginning
-                            step_result = step_result[:2000] + "\n...\n" + step_result[-500:]
-                        research_step = Step(
-                            id=str(uuid.uuid4()),
-                            task_id=task_id,
-                            step_number=1,
-                            instruction=f"Research: {task.user_input}",
-                            status=StepStatus.COMPLETED,
-                            tool_name="web_search",
-                            result=step_result,
-                            retry_count=graph_state.get("retry_count", 0),
-                        )
-                        research_step.completed_at = _utcnow()
-                        db.add(research_step)
-
-                        # Track saved file if synthesizer wrote one
-                        saved_file = graph_state.get("saved_file", "")
-                        if saved_file:
-                            task_context.created_files = [
-                                *(task_context.created_files or []),
-                                saved_file,
-                            ]
-                            task_metrics["created_files"].append(saved_file)
-
-                        db.commit()
-
-                        global_cost_tracker.record_search()
-                        task_metrics["search_decision"] = {
-                            "should_search": True,
-                            "reason": "web_research task routed via research_graph",
-                        }
-
-                        # Store in qdrant for session memory
-                        if task.session_id:
-                            qdrant_memory.store_memory(
-                                session_id=task.session_id,
-                                query=task.user_input,
-                                result=graph_output,
-                            )
-
-                        await ws_manager.emit(
-                            task_id,
-                            {
-                                "phase": "research",
-                                "status": "completed",
-                                "verdict": graph_state.get("critic_verdict"),
-                                "num_results": graph_state.get("num_results", 0),
-                                "retries": graph_state.get("retry_count", 0),
-                            },
-                        )
-
-                        # If the graph produced any output (even FAIL with partial results),
-                        # complete the task — the synthesizer already wrote what it could.
-                        # Don't fall through to loop_v3 pipeline which would fail the same way.
-                        if graph_output.strip():
-                            verdict = graph_state.get("critic_verdict", "FAIL")
-                            task.status = TaskStatus.COMPLETED
-                            task.completed_at = _utcnow()
-                            task_context.context_data = context
-                            db.commit()
-                            logger.info(
-                                "orchestrator_research_graph_early_complete",
-                                task_id=task_id,
-                                verdict=verdict,
-                            )
-                            await ws_manager.emit(
-                                task_id, {"phase": "completed", "status": "completed"}
-                            )
-                            finalize_and_export(task_metrics)
-                            global_cost_tracker.complete_task(success=verdict == "PASS")
-                            return
-
-                except Exception as e:
-                    # Non-fatal: log and fall through to normal loop_v3 pipeline
-                    logger.error("orchestrator_research_graph_failed", error=str(e))
+            # Capability routing is handled once by the structured planner below.
+            # Specialist agents remain available to explicit recovery flows, but
+            # are not invoked speculatively before the planner selects tools.
+            await ws_manager.emit(task_id, {"phase": "coordination", "status": "skipped"})
 
             # ================================================================
             # PHASE 1: MEMORY RECALL
@@ -686,43 +529,24 @@ async def execute_task_v3(task_id: str) -> None:
                 except Exception as e:
                     logger.error("orchestrator_memory_failed", error=str(e))
 
-            # ================================================================
-            # PHASE 2: SEARCH DECISION
-            # ================================================================
-            if reasoning_output:
-                should_search, search_reason = search_decider.should_search(
-                    task_description=task.user_input,
-                    reasoning=reasoning_output,
-                    memory_confidence=(memory_confidence if memory_confidence > 0 else None),
-                    similar_memories=similar_memories,
-                )
-                task_metrics["search_decision"] = {
-                    "should_search": should_search,
-                    "reason": search_reason,
-                }
-                logger.info(
-                    "orchestrator_search_decision",
-                    should_search=should_search,
-                    reason=search_reason,
-                )
-
-                if task.session_id:
-                    memories = qdrant_memory.search_memory(task.user_input, limit=2)
-                    # Filter out low-quality memories before injecting into context
-                    JUNK_PATTERNS = [
-                        "ENGINEERING EXECUTION",
-                        "All agents failed",
-                        "Tool execution would happen here",
-                        "Failed to choose appropriate tool",
-                    ]
-                    memories = [
-                        m for m in memories
-                        if m.get("result")
-                        and not any(p in m.get("result", "") for p in JUNK_PATTERNS)
-                        and len(m.get("result", "").strip()) > 50
-                    ]
-                    context["qdrant_memories"] = memories
-                    logger.info("qdrant_memories_loaded", count=len(memories))
+            # Memory recall is independent from external tool selection.
+            if task.session_id:
+                memories = qdrant_memory.search_memory(task.user_input, limit=2)
+                # Filter out low-quality memories before injecting into context.
+                junk_patterns = [
+                    "ENGINEERING EXECUTION",
+                    "All agents failed",
+                    "Tool execution would happen here",
+                    "Failed to choose appropriate tool",
+                ]
+                memories = [
+                    m for m in memories
+                    if m.get("result")
+                    and not any(p in m.get("result", "") for p in junk_patterns)
+                    and len(m.get("result", "").strip()) > 50
+                ]
+                context["qdrant_memories"] = memories
+                logger.info("qdrant_memories_loaded", count=len(memories))
 
             # ================================================================
             # PHASE 3: PLANNING
@@ -778,7 +602,33 @@ async def execute_task_v3(task_id: str) -> None:
                 logger.info(
                     "planner_final_input", task_description=task_description[:2000]
                 )
-                plan = await planner.plan(task_description)
+                planner_intent = await planner.plan_intent(task_description)
+                plan = planner_intent["steps"]
+                research_enabled = bool(planner_intent.get("research")) or planner_intent["mode"] == "multi_tool"
+                research_started_at = time.monotonic()
+                research_plan = None
+                research_history = []
+                if research_enabled:
+                    max_initial_steps = max(1, settings.RESEARCH_MAX_TOOL_CALLS)
+                    if len(plan) > max_initial_steps:
+                        plan = plan[:max_initial_steps]
+                    research_plan = ResearchPlan.from_intent(task.user_input, plan, planner_intent)
+                    task_metrics["research"] = {
+                        "plan": research_plan.model_dump(),
+                        "iterations": 0,
+                        "tool_calls": 0,
+                        "stopping_reason": "initial_plan_pending",
+                    }
+                selected_tool_names = [step["tool"] for step in plan]
+                should_search = any(name in {
+                    "web_search", "web_fetch", "news_search", "semantic_scholar_search", "wikipedia_search"
+                } for name in selected_tool_names)
+                task_metrics["search_decision"] = {
+                    "should_search": should_search,
+                    "planner_mode": planner_intent["mode"],
+                    "selected_tools": selected_tool_names,
+                    "reason": "structured planner intent",
+                }
                 global_cost_tracker.record_llm_call(
                     agent="planner",
                     model=planner.model,
@@ -795,6 +645,33 @@ async def execute_task_v3(task_id: str) -> None:
                 db.commit()
                 finalize_and_export(task_metrics)
                 global_cost_tracker.complete_task(success=False)
+                return
+
+            # Direct answers and requested deliverables complete from the planner's
+            # structured intent without dispatching any tool or specialist.
+            if planner_intent["mode"] == "direct_response":
+                final_output = planner_intent["answer"]
+                direct_step = Step(
+                    id=str(uuid.uuid4()), task_id=task_id, step_number=1,
+                    instruction="Return the requested direct response",
+                    status=StepStatus.COMPLETED, result=final_output,
+                    completed_at=_utcnow(),
+                )
+                db.add(direct_step)
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = _utcnow()
+                task_context.context_data = {
+                    **context, "planner_intent": planner_intent,
+                    "final_output": final_output,
+                }
+                task_metrics["total_steps"] = 1
+                task_metrics["completed_steps"] = 1
+                db.commit()
+                await ws_manager.emit(task_id, {"phase": "planning", "status": "completed", "steps": []})
+                await ws_manager.emit(task_id, {"phase": "completed", "status": "completed"})
+                logger.info("orchestrator_direct_response_completed", task_id=task_id)
+                finalize_and_export(task_metrics)
+                global_cost_tracker.complete_task(success=True)
                 return
 
             # Persist all steps, then fetch them in one query for the execution loop
@@ -853,6 +730,7 @@ async def execute_task_v3(task_id: str) -> None:
                 {
                     "memories": similar_memories,
                     "should_search": should_search,
+                    "planner_mode": planner_intent["mode"],
                     "preferred_tools": tool_success_memory.top_tools(),
                 }
             )
@@ -860,6 +738,11 @@ async def execute_task_v3(task_id: str) -> None:
 
             # ── Group steps into parallel/sequential batches ──────────────
             step_batches = _group_parallel_steps(plan)
+            # Multi-source research steps share the request-scoped SQLAlchemy
+            # session and evidence context. Run them in plan order to avoid
+            # concurrent session writes and partial task completion races.
+            if research_enabled:
+                step_batches = [[step] for step in plan]
             logger.info(
                 "orchestrator_step_batches",
                 total_steps=len(plan),
@@ -868,6 +751,12 @@ async def execute_task_v3(task_id: str) -> None:
             )
 
             # ── Inner coroutine: execute one step with retry/recovery ─────
+            def _research_tool_call_count() -> int:
+                return sum(
+                    len(context.get(f"step_{planned['step']}_evidence", []))
+                    for planned in plan
+                )
+
             async def _run_step(step_data: dict) -> bool:
                 """
                 Execute a single plan step. Returns True if the step succeeded
@@ -899,12 +788,21 @@ async def execute_task_v3(task_id: str) -> None:
                     },
                 )
 
-                max_retries              = critic.MAX_RETRIES
+                max_retries              = min(
+                    critic.MAX_RETRIES,
+                    max(1, settings.RESEARCH_MAX_REPEAT_STEPS + 1),
+                ) if research_enabled else critic.MAX_RETRIES
                 retry_count              = 0
                 step_succeeded           = False
                 switched_agents_this_step: set = set()
 
                 while retry_count < max_retries and not step_succeeded:
+                    if (research_enabled
+                            and _research_tool_call_count() >= settings.RESEARCH_MAX_TOOL_CALLS):
+                        step.status = StepStatus.SKIPPED
+                        step.error = "Research tool-call budget reached"
+                        db.commit()
+                        return True
                     step.status = StepStatus.RUNNING
                     step.retry_count = retry_count
                     db.commit()
@@ -915,24 +813,42 @@ async def execute_task_v3(task_id: str) -> None:
                             if tool_failure_memory.should_avoid(t)
                         ]
 
-                        t0          = time.time()
-                        tool_result = await executor.execute_step(
-                            instruction=step.instruction, context=context
+                        primary_tool = step_data.get("tool", "unknown")
+                        step_context = dict(context)
+                        if research_enabled:
+                            remaining_calls = max(1, settings.RESEARCH_MAX_TOOL_CALLS - _research_tool_call_count())
+                            step_context["max_tool_attempts"] = remaining_calls
+                        t0 = time.time()
+                        tool_result, tool_attempts = await executor.execute_with_fallbacks(
+                            instruction=step.instruction,
+                            primary_tool=primary_tool,
+                            fallback_tools=step_data.get("fallback_tools", []),
+                            request=task.user_input,
+                            context=step_context,
                         )
                         global_cost_tracker.record_llm_call(
                             agent="executor",
                             model=executor.model,
                             response_length=len(str(tool_result)),
-                            purpose="execution",
+                            purpose="execution_with_fallbacks",
                             duration_ms=(time.time() - t0) * 1000,
                         )
-
-                        if tool_result.metadata.get("tool_name") in ("web_search", "web_fetch", "news_search", "get_weather"):
-                            global_cost_tracker.record_search()
+                        evidence_attempts = []
+                        for attempted_wrapper, attempt_result in tool_attempts:
+                            evidence_attempts.append(_tool_evidence(attempted_wrapper, attempt_result))
+                            if attempted_wrapper in (
+                                "web_search", "web_fetch", "news_search", "get_weather",
+                                "semantic_scholar_search", "wikipedia_search",
+                            ):
+                                global_cost_tracker.record_search()
 
                         step.result   = tool_result.output
                         step.error    = tool_result.error
-                        step.tool_name = tool_result.metadata.get("tool_name")
+                        step.tool_name = tool_result.metadata.get("tool_name") or primary_tool
+                        context[f"step_{step_number}_evidence"] = [
+                            *context.get(f"step_{step_number}_evidence", []),
+                            *evidence_attempts,
+                        ]
                         db.commit()
 
                         logger.info(
@@ -941,22 +857,61 @@ async def execute_task_v3(task_id: str) -> None:
                             success=tool_result.success,
                         )
 
-                        if tool_result.success and tool_result.metadata.get("tool_name"):
+                        if tool_result.success and (tool_result.output or "").strip() and tool_result.metadata.get("tool_name"):
                             tool_failure_memory.reset_failures(tool_result.metadata["tool_name"])
 
-                        t0         = time.time()
-                        evaluation = await critic.evaluate(
-                            step_instruction=step.instruction,
-                            tool_result=tool_result,
-                            retry_count=retry_count,
-                        )
-                        global_cost_tracker.record_llm_call(
-                            agent="critic",
-                            model=critic.model,
-                            response_length=len(str(evaluation)),
-                            purpose="critic",
-                            duration_ms=(time.time() - t0) * 1000,
-                        )
+                        if tool_result.success and not (tool_result.output or "").strip():
+                            tool_result.success = False
+                            tool_result.error = "Tool returned an empty result"
+                            tool_result.metadata["failure_type"] = "EMPTY_RESULT"
+
+                        if not tool_result.success:
+                            # Preserve the failure as task data so the final answer
+                            # can report the limitation and still use other results.
+                            tool_name = step.tool_name or step_data.get("tool") or "selected tool"
+                            step.error = tool_result.error or "Tool returned no result"
+                            step.result = f"{tool_name} failed: {step.error}"
+                            step.status = StepStatus.FAILED
+                            step.completed_at = _utcnow()
+                            context[f"step_{step_number}_output"] = ""
+                            context[f"step_{step_number}_error"] = step.result
+                            context[f"step_{step_number}_success"] = False
+                            context[f"step_{step_number}_tool"] = primary_tool
+                            task_metrics["failures"].append({
+                                "step_number": step_number,
+                                "error": step.error,
+                                "category": tool_result.metadata.get("failure_type", "TOOL_FAILURE"),
+                            })
+                            await ws_manager.emit(task_id, {
+                                "phase": "step", "status": "failed",
+                                "step_number": step_number, "error": step.error,
+                            })
+                            db.commit()
+                            return True
+
+                        t0 = time.time()
+                        if research_enabled:
+                            # Tool-result relevance is assessed collectively by
+                            # the research reviewer after collection. Avoid a
+                            # redundant per-step LLM call in this path.
+                            evaluation = CriticResult(
+                                verdict=Verdict.PASS,
+                                reason="Nonempty wrapper result retained for research coverage review",
+                                relevance_score=100,
+                            )
+                        else:
+                            evaluation = await critic.evaluate(
+                                step_instruction=step.instruction,
+                                tool_result=tool_result,
+                                retry_count=retry_count,
+                            )
+                            global_cost_tracker.record_llm_call(
+                                agent="critic",
+                                model=critic.model,
+                                response_length=len(str(evaluation)),
+                                purpose="critic",
+                                duration_ms=(time.time() - t0) * 1000,
+                            )
 
                         logger.info(
                             "orchestrator_step_evaluated",
@@ -975,6 +930,33 @@ async def execute_task_v3(task_id: str) -> None:
                             "reason":       evaluation.reason,
                             "timestamp":    _utcnow().isoformat(),
                         })
+
+                        # A critic disagreement should not discard successful
+                        # source material in a multi-source research task. Keep
+                        # the evidence and let final synthesis qualify it.
+                        if (planner_intent["mode"] == "multi_tool"
+                                and evaluation.verdict != Verdict.PASS):
+                            critic_unavailable = evaluation.reason == "Failed to parse critic evaluation"
+                            step.status = StepStatus.COMPLETED if critic_unavailable else StepStatus.FAILED
+                            step.error = None if critic_unavailable else (evaluation.reason or "Critic could not validate this source")
+                            step.result = tool_result.output
+                            context[f"step_{step_number}_output"] = tool_result.output
+                            context[f"step_{step_number}_success"] = bool(tool_result.success)
+                            context[f"step_{step_number}_tool"] = step.tool_name
+                            context[f"step_{step_number}_review"] = evaluation.reason
+                            if not critic_unavailable:
+                                task_metrics["failures"].append({
+                                    "step_number": step_number,
+                                    "error": step.error,
+                                    "category": "REVIEW_REJECTED_EVIDENCE_RETAINED",
+                                })
+                            else:
+                                task_metrics.setdefault("warnings", []).append({
+                                    "step_number": step_number,
+                                    "warning": "Critic response was unparseable; successful nonempty source evidence was retained",
+                                })
+                            db.commit()
+                            return True
 
                         # ── PASS ──────────────────────────────────────────
                         if evaluation.verdict == Verdict.PASS:
@@ -1000,6 +982,7 @@ async def execute_task_v3(task_id: str) -> None:
                             )
                             context[f"step_{step_number}_output"]  = tool_result.output
                             context[f"step_{step_number}_success"] = True
+                            context[f"step_{step_number}_tool"] = step.tool_name
 
                             filename = tool_result.metadata.get("filename")
                             if filename and filename not in (task_context.created_files or []):
@@ -1148,6 +1131,12 @@ async def execute_task_v3(task_id: str) -> None:
                     cancellation_store.clear(task_id)
                     return
 
+                if (research_enabled and
+                        time.monotonic() - research_started_at >= settings.RESEARCH_MAX_SECONDS):
+                    if research_plan:
+                        research_plan.stopping_reason = "research_time_limit"
+                    break
+
                 if len(batch) == 1:
                     # Sequential step
                     ok = await _run_step(batch[0])
@@ -1176,6 +1165,231 @@ async def execute_task_v3(task_id: str) -> None:
                             return
                         if r is False:
                             return   # hard-fail already written by _run_step
+
+            # Evaluate coverage and information gaps only for plans the planner
+            # identified as complex research (or genuinely multi-source tasks).
+            # Simple single-wrapper lookups retain their low-cost path.
+            final_evidence: list[dict[str, Any]] = []
+            if research_enabled and research_plan is not None:
+                reviewer = ResearchSufficiencyReviewer(planner.model)
+                seen_research_steps = {
+                    normalize_research_key(item.tool, item.instruction)
+                    for item in research_plan.research_steps
+                }
+
+                def _collect_research_evidence() -> list[dict[str, Any]]:
+                    collected = []
+                    for item in research_plan.research_steps:
+                        attempts = context.get(f"step_{item.step}_evidence", [])
+                        orm_step = steps_by_number.get(item.step)
+                        if orm_step and orm_step.status == StepStatus.COMPLETED:
+                            state = "completed"
+                        elif attempts:
+                            state = "failed"
+                        else:
+                            state = "skipped"
+                        research_plan.record_step(item.step, state, item.step)
+                        collected.append({
+                            "evidence_id": item.step,
+                            "subquestion": item.subquestion,
+                            "instruction": item.instruction,
+                            "tool": item.tool,
+                            "status": state,
+                            "attempts": attempts,
+                            "result": context.get(f"step_{item.step}_output", ""),
+                            "error": context.get(f"step_{item.step}_error", ""),
+                        })
+                    return collected
+
+                for iteration in range(max(0, settings.RESEARCH_MAX_ITERATIONS) + 1):
+                    final_evidence = _collect_research_evidence()
+                    if time.monotonic() - research_started_at >= settings.RESEARCH_MAX_SECONDS:
+                        research_plan.stopping_reason = "research_time_limit"
+                        break
+                    remaining_time = max(
+                        0.1, settings.RESEARCH_MAX_SECONDS - (time.monotonic() - research_started_at)
+                    )
+                    assessment_started = time.monotonic()
+                    try:
+                        assessment = await asyncio.wait_for(
+                            reviewer.assess(research_plan, final_evidence), timeout=remaining_time
+                        )
+                    except asyncio.TimeoutError:
+                        for diagnostic in reviewer.last_call_diagnostics:
+                            task_metrics["llm_attempts"].append(diagnostic)
+                            global_cost_tracker.record_llm_diagnostic(diagnostic)
+                        research_plan.stopping_reason = "research_time_limit_during_evidence_review"
+                        break
+                    for diagnostic in reviewer.last_call_diagnostics:
+                        task_metrics["llm_attempts"].append(diagnostic)
+                        global_cost_tracker.record_llm_diagnostic(diagnostic)
+                    global_cost_tracker.record_llm_call(
+                        agent="research_reviewer", model=planner.model,
+                        response_length=len(str(assessment)), purpose="research_sufficiency",
+                        duration_ms=(time.monotonic() - assessment_started) * 1000,
+                    )
+                    research_plan.iteration_count = iteration + 1
+                    research_plan.unresolved_questions = assessment.unresolved_questions
+                    research_plan.conflicts = assessment.conflicts
+                    research_history.append({
+                        "iteration": iteration + 1,
+                        "sufficient": assessment.sufficient,
+                        "addressed_subquestions": assessment.addressed_subquestions,
+                        "unresolved_questions": assessment.unresolved_questions,
+                        "conflicts": [item.model_dump() for item in assessment.conflicts],
+                        "stopping_reason": assessment.stopping_reason,
+                    })
+                    stop_reason = research_stop_reason(
+                        assessment, iteration=iteration,
+                        max_iterations=max(0, settings.RESEARCH_MAX_ITERATIONS),
+                        tool_calls=_research_tool_call_count(),
+                        max_tool_calls=settings.RESEARCH_MAX_TOOL_CALLS,
+                        elapsed_seconds=time.monotonic() - research_started_at,
+                        max_seconds=settings.RESEARCH_MAX_SECONDS,
+                    )
+                    if stop_reason:
+                        research_plan.stopping_reason = stop_reason
+                        break
+                    available_calls = settings.RESEARCH_MAX_TOOL_CALLS - _research_tool_call_count()
+                    followups = research_plan.append_followups(
+                        assessment, seen_research_steps, max_steps=available_calls
+                    )
+                    if not followups:
+                        research_plan.stopping_reason = "no_new_valid_follow_up"
+                        break
+                    research_plan.iteration_count = iteration + 2
+                    for followup in followups:
+                        if time.monotonic() - research_started_at >= settings.RESEARCH_MAX_SECONDS:
+                            research_plan.stopping_reason = "research_time_limit"
+                            break
+                        if _research_tool_call_count() >= settings.RESEARCH_MAX_TOOL_CALLS:
+                            research_plan.stopping_reason = "maximum_tool_calls_reached"
+                            break
+                        number = followup["step"]
+                        db_step = Step(
+                            id=str(uuid.uuid4()), task_id=task_id, step_number=number,
+                            instruction=followup["instruction"], status=StepStatus.PENDING,
+                        )
+                        db.add(db_step)
+                        db.commit()
+                        steps_by_number[number] = db_step
+                        step_numbers.append(number)
+                        plan.append(followup)
+                        task_metrics["total_steps"] += 1
+                        followup_state = next(
+                            item for item in research_plan.research_steps if item.step == number
+                        )
+                        await ws_manager.emit(task_id, {
+                            "phase": "research", "status": "follow_up_started",
+                            "iteration": iteration + 2, "step_number": number,
+                            "subquestion": followup_state.subquestion,
+                        })
+                        if not await _run_step(followup):
+                            research_plan.stopping_reason = "follow_up_execution_failed"
+                            break
+                    else:
+                        continue
+                    break
+                else:
+                    research_plan.stopping_reason = "maximum_research_iterations_reached"
+
+                final_evidence = _collect_research_evidence()
+                final_evidence = [
+                    {
+                        **item,
+                        "attempts": [
+                            {**attempt, "subquestion": item["subquestion"], "evidence_id": item["evidence_id"]}
+                            for attempt in item["attempts"]
+                        ],
+                    }
+                    for item in final_evidence
+                ]
+                task_metrics["research"] = {
+                    "plan": research_plan.model_dump(),
+                    "history": research_history,
+                    "iterations": research_plan.iteration_count,
+                    "tool_calls": _research_tool_call_count(),
+                    "stopping_reason": research_plan.stopping_reason,
+                    "elapsed_seconds": round(time.monotonic() - research_started_at, 2),
+                }
+                context["research_state"] = task_metrics["research"]
+                db.commit()
+
+            # Synthesize tool evidence into the final answer. This also reports
+            # failed wrappers explicitly instead of inventing missing facts.
+            evidence = final_evidence or []
+            if not evidence:
+                for step_data in plan:
+                    number = step_data["step"]
+                    evidence.append({
+                        "step": number,
+                        "instruction": step_data["instruction"],
+                        "attempts": context.get(f"step_{number}_evidence", []),
+                        "selected_tool": context.get(f"step_{number}_tool"),
+                        "success": context.get(f"step_{number}_success", False),
+                        "result": context.get(f"step_{number}_output", ""),
+                        "error": context.get(f"step_{number}_error", ""),
+                    })
+            synthesis_started = time.time()
+            research_synthesis_context = ""
+            if research_enabled and research_plan is not None:
+                research_synthesis_context = (
+                    "\n\nResearch plan and review state (include material gaps, conflicts, and stop reason):\n"
+                    + json.dumps({
+                        "objective": research_plan.objective,
+                        "subquestions": research_plan.subquestions,
+                        "completed_steps": research_plan.completed_steps,
+                        "unresolved_questions": research_plan.unresolved_questions,
+                        "conflicts": [item.model_dump() for item in research_plan.conflicts],
+                        "iteration_count": research_plan.iteration_count,
+                        "stopping_reason": research_plan.stopping_reason,
+                        "assessment_history": research_history,
+                    }, ensure_ascii=False, default=str)
+                )
+            try:
+                final_output = await call_openai_with_system(
+                    system_prompt=(
+                        "Answer the user's request using only the tool evidence supplied. "
+                        "Clearly state when a source failed and do not guess missing facts. Ignore evidence marked failed or unverified. "
+                        "Never claim that a wrapper/source was attempted unless it appears in the supplied evidence. "
+                        "Every URL in your answer must appear verbatim in a successful evidence result; do not invent or recall URLs. "
+                        "For conflicts, describe both positions and preserve uncertainty unless the supplied research review resolves them. "
+                        "Combine independent sources when the request asks for a comparison or conclusion. "
+                        "Do not claim a tool succeeded unless its evidence says success. Use clean natural language, "
+                        "not JSON or internal intent metadata. Name the source and note when fallback search evidence "
+                        "is less authoritative than a primary API."
+                    ),
+                    user_prompt=(
+                        f"User request:\n{task.user_input}\n\nTool evidence:\n"
+                        f"{json.dumps(compact_research_evidence(evidence), ensure_ascii=False, default=str)}"
+                        f"{research_synthesis_context}"
+                    ),
+                    model=planner.model,
+                    temperature=0.1,
+                    max_tokens=3000,
+                    reasoning_effort="low",
+                )
+                if not _synthesis_has_grounded_links(final_output, evidence):
+                    logger.warning("orchestrator_synthesis_rejected_unretrieved_url")
+                    final_output = _format_evidence_fallback(evidence, task_metrics.get("research"))
+            except Exception as exc:
+                logger.warning("orchestrator_synthesis_failed", error_type=type(exc).__name__)
+                final_output = _format_evidence_fallback(evidence, task_metrics.get("research"))
+            global_cost_tracker.record_llm_call(
+                agent="planner", model=planner.model,
+                response_length=len(final_output), purpose="synthesis",
+                duration_ms=(time.time() - synthesis_started) * 1000,
+            )
+            final_step_number = max(step_numbers, default=0) + 1
+            db.add(Step(
+                id=str(uuid.uuid4()), task_id=task_id,
+                step_number=final_step_number,
+                instruction="Synthesize the tool results into the requested answer",
+                status=StepStatus.COMPLETED, result=final_output,
+                completed_at=_utcnow(),
+            ))
+            context["final_output"] = final_output
+            db.commit()
 
             # ================================================================
             # PHASE 5: REFLECTION & LEARNING

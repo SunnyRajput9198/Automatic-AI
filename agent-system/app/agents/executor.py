@@ -8,7 +8,7 @@ from app.utils.json_parser import extract_json
 from app.utils.llm import call_openai_with_system, call_openai_with_tools
 from app.utils.file_manager import FileManager
 from app.utils.cost_tracker import global_cost_tracker
-from app.tools.base import Tool, ToolResult
+from app.tools.base import Tool, ToolResult, classify_tool_failure
 from app.tools.python_tool import RestrictedPythonExecutor
 from app.tools.shell_tool import ShellExecutor
 from app.tools.file_tools import (
@@ -26,6 +26,7 @@ from app.tools.web_search import (
 )
 from app.tools.news_tool import NewsSearchTool
 from app.tools.weather_tool import WeatherTool
+from app.tools.github_tool import GitHubTool
 from app.core.config import settings
 
 logger = structlog.get_logger()
@@ -45,7 +46,13 @@ _TOOL_WORDS = frozenset({
     "web_search", "web_fetch", "news_search",
     "semantic_scholar_search", "wikipedia_search",
     "file_read", "file_write", "file_list", "file_append", "file_delete",
-    "python_executor", "shell_executor",
+    "python_executor", "restricted_python_executor", "shell_executor", "github",
+})
+
+_VALID_TOOL_NAMES = frozenset({
+    "web_search", "web_fetch", "github", "get_weather", "news_search",
+    "semantic_scholar_search", "wikipedia_search", "python_executor",
+    "shell_executor", "file_read", "file_write", "file_append", "file_list", "file_delete",
 })
 
 # System prompt for the tool-binding LLM call
@@ -57,11 +64,13 @@ _TOOL_SELECTION_SYSTEM = (
     "- semantic_scholar_search → research papers, ML models, algorithms, academic topics\n"
     "- wikipedia_search        → factual lookups, definitions, general knowledge\n"
     "- news_search             → latest news, current events, today's headlines, breaking news\n"
+    "- github                  → latest commit or release from a named repository; do not use web_search for this\n"
     "- get_weather             → current temperature and weather for any city — ALWAYS use this for temperature/weather queries\n"
     "- web_search              → ambiguous or broad queries needing multiple sources\n"
     "- web_fetch               → fetch content from a specific known URL\n"
     "- news_search             → current news, today's headlines, breaking news, recent events\n"
     "- python_executor         → run executable Python code (provide actual code, not a description)\n"
+    "- Use only the minimum necessary tool. A specific GitHub request maps to github; weather maps to get_weather; fresh general information maps to web_search.\n"
     "- shell_executor          → whitelisted shell commands\n"
     "- file_read/write/append/list/delete → workspace file operations\n\n"
     "IMPORTANT: When a file_write step says to save results from previous steps,\n"
@@ -104,12 +113,102 @@ class ExecutorAgent:
             WikipediaTool(),
             NewsSearchTool(),
             WeatherTool(),
+            GitHubTool(),
         ]:
             self._register(tool)
 
     def _register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
         logger.info("tool_registered", tool=tool.name)
+
+    @staticmethod
+    def can_fallback(primary: str, fallback: str, request: str) -> bool:
+        """Allow only source alternatives that can answer the same information need."""
+        compatible = {
+            "github": {"web_search"},
+            "semantic_scholar_search": {"web_search"},
+            "wikipedia_search": {"web_search"},
+            "web_search": {"news_search", "semantic_scholar_search"},
+        }
+        if fallback not in compatible.get(primary, set()):
+            return False
+        # Search indexes cannot reliably establish private repo state. Only
+        # permit an API-to-web fallback if the request identifies public data.
+        if primary == "github" and (
+            "public" not in request.lower() or "private" in request.lower()
+        ):
+            return False
+        return True
+
+    async def execute_with_fallbacks(
+        self,
+        instruction: str,
+        primary_tool: str,
+        fallback_tools: list,
+        request: str,
+        context: Optional[Dict[str, Any]] = None,
+    ):
+        """Run the selected wrapper, then only explicitly compatible alternatives."""
+        context = dict(context or {})
+        context["forced_tool"] = primary_tool
+        primary_result = await self.execute_step(instruction, context=context)
+        attempts = [(primary_tool, primary_result)]
+        candidates = list(fallback_tools or [])
+        max_attempts = max(1, int(context.get("max_tool_attempts", 1 + len(candidates))))
+        if primary_tool == "github" and "public" in request.lower():
+            candidates.append("web_search")
+        if primary_result.success:
+            return primary_result, attempts
+
+        final_result = primary_result
+        for fallback_name in dict.fromkeys(candidates):
+            if len(attempts) >= max_attempts:
+                break
+            if not self.can_fallback(primary_tool, fallback_name, request):
+                continue
+            if fallback_name not in self.tools:
+                continue
+            fallback_instruction = (
+                "Search official GitHub web pages for the latest commit or release of the explicitly "
+                "public repository in this request. Verify the SHA or tag from a direct GitHub URL; "
+                "if it cannot be verified, return no result.\n"
+                if primary_tool == "github" else
+                f"Use {fallback_name} as an alternative source for the same information. "
+                "Return only evidence this source actually provides.\n"
+            ) + f"User request: {request}"
+            fallback_context = dict(context)
+            fallback_context["forced_tool"] = fallback_name
+            fallback_result = await self.execute_step(fallback_instruction, context=fallback_context)
+            attempts.append((fallback_name, fallback_result))
+            if fallback_result.success:
+                if primary_tool == "github" and not self._github_search_evidence_matches(request, fallback_result.output):
+                    fallback_result.metadata["validation_status"] = "unverified"
+                    fallback_result.metadata["failure_type"] = "UNVERIFIED_FALLBACK"
+                    fallback_result.error = "Web search did not verify the requested repository commit or release"
+                    final_result = ToolResult(
+                        success=False, output="", error=fallback_result.error,
+                        metadata={"tool_name": primary_tool, "source": "GitHub REST API",
+                                  "failure_type": "UNVERIFIED_FALLBACK"},
+                    )
+                    continue
+                fallback_result.metadata["fallback_from"] = primary_tool
+                return fallback_result, attempts
+            final_result = fallback_result
+        return final_result, attempts
+
+    @staticmethod
+    def _github_search_evidence_matches(request: str, output: str) -> bool:
+        """Require repo-specific GitHub links and an identifiable commit or release tag."""
+        match = re.search(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", request)
+        if not match:
+            return False
+        repository = f"{match.group(1)}/{match.group(2)}".lower()
+        text = output.lower()
+        if repository not in text or f"github.com/{repository}" not in text:
+            return False
+        if "release" in request.lower():
+            return "/releases/" in text and ("tag" in text or "release" in text)
+        return bool(re.search(r"(?<![a-f0-9])[a-f0-9]{7,40}(?![a-f0-9])", text))
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -119,15 +218,10 @@ class ExecutorAgent:
         self, instruction: str, context: Optional[Dict[str, Any]] = None
     ) -> ToolResult:
         """Choose a tool via LLM tool binding and execute a single plan step."""
-        logger.info("executor_starting", instruction=instruction[:120])
+        logger.info("executor_starting", instruction_length=len(instruction))
         context       = context or {}
         avoid_tools   = context.get("avoid_tools", [])
         instruction_l = instruction.lower()
-
-        # Force file_write when python_executor is on the avoid list
-        if "python_executor" in avoid_tools:
-            logger.warning("forcing_tool_due_to_failures", tool="file_write")
-            context["forced_tool"] = "file_write"
 
         # ── Fast-path 1: session-history summarisation (no tool needed) ──
         if "session_history" in context and not any(w in instruction_l for w in _TOOL_WORDS):
@@ -229,12 +323,12 @@ class ExecutorAgent:
             return ToolResult(success=False, output="", error=f"Unknown tool: {tool_name}")
 
         # Validate python_executor inputs
-        if tool_name == "python_executor":
+        if tool_name in {"python_executor", "restricted_python_executor"}:
             code = tool_inputs.get("code", "")
             if not code:
                 return ToolResult(
                     success=False, output="",
-                    error="python_executor requires a 'code' parameter.",
+                    error=f"{tool_name} requires a 'code' parameter.",
                 )
             if code.lower().startswith(
                 ("create a", "write a", "make a", "build a", "generate a", "produce a")
@@ -252,6 +346,20 @@ class ExecutorAgent:
         try:
             t0     = time.time()
             result = await self.tools[tool_name].run(**tool_inputs)
+            result.metadata.setdefault("tool_name", tool_name)
+            result.metadata.setdefault(
+                "source", result.metadata.get("sources") or tool_name
+            )
+            safe_query = next((tool_inputs[key] for key in ("query", "city", "owner") if tool_inputs.get(key)), None)
+            if safe_query:
+                result.metadata.setdefault("query", str(safe_query)[:500])
+            if result.success:
+                from datetime import datetime, timezone
+                result.metadata.setdefault("retrieved_at", datetime.now(timezone.utc).isoformat())
+            else:
+                result.metadata.setdefault(
+                    "failure_type", classify_tool_failure(result.error)
+                )
             global_cost_tracker.record_tool_call(
                 tool_name=tool_name,
                 agent="executor",
@@ -261,18 +369,20 @@ class ExecutorAgent:
             logger.info("executor_completed", tool=tool_name, success=result.success)
             return result
         except Exception as e:
-            logger.error("executor_error", tool=tool_name, error=str(e))
-            return ToolResult(success=False, output="", error=f"Tool execution failed: {str(e)}")
+            failure_type = classify_tool_failure(type(e).__name__)
+            logger.error("executor_error", tool=tool_name, failure_type=failure_type)
+            return ToolResult(success=False, output="", error=f"Tool execution failed ({failure_type})",
+                              metadata={"tool_name": tool_name, "source": tool_name, "failure_type": failure_type})
 
     # ------------------------------------------------------------------
     # Private: LLM tool binding
     # ------------------------------------------------------------------
 
-    def _build_tool_schemas(self, avoid_tools: list) -> list:
+    def _build_tool_schemas(self, avoid_tools: list, only_tool: Optional[str] = None) -> list:
         return [
             tool.to_openai_schema()
             for name, tool in self.tools.items()
-            if name not in avoid_tools
+            if name not in avoid_tools and (only_tool is None or name == only_tool)
         ]
 
     def _build_context_str(self, context: Dict[str, Any]) -> str:
@@ -304,7 +414,10 @@ class ExecutorAgent:
         forced_tool     = context.get("forced_tool")
         preferred_tools = context.get("preferred_tools", [])
 
-        tool_schemas = self._build_tool_schemas(avoid_tools)
+        tool_schemas = self._build_tool_schemas(avoid_tools, only_tool=forced_tool)
+        if forced_tool and not tool_schemas:
+            logger.warning("planner_selected_unavailable_tool", tool=forced_tool)
+            return None
         context_str  = self._build_context_str(context)
 
         preferred_hint = ""
@@ -353,5 +466,5 @@ class ExecutorAgent:
             return None
 
         except Exception as e:
-            logger.error("executor_choice_error", error=str(e))
+            logger.error("executor_choice_error", error_type=type(e).__name__)
             return None

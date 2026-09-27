@@ -37,32 +37,25 @@ def extract_json(response: str, context: str = "") -> Optional[dict]:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-        # Find outermost JSON object by brace matching
-    for start_char, end_char in [("{", "}"), ("[", "]")]:
-        depth = 0
-        start_idx = end_idx = -1
-
-        for i, char in enumerate(text):
-            if char == "{":
-                if depth == 0:
-                    start_idx = i
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0 and start_idx != -1:
-                    end_idx = i
-                    break
-
-        if start_idx != -1 and end_idx != -1:
-            try:
-                return json.loads(text[start_idx : end_idx + 1])
-            except json.JSONDecodeError as e:
-                logger.error(
-                    "json_parser_failed",
-                    context=context,
-                    error=str(e),
-                    preview=text[start_idx : start_idx + 200],
-                )
+    # Decode from each object boundary. JSONDecoder tracks quoted strings and
+    # escapes correctly, unlike a brace counter (which breaks on `{` or `}` in
+    # explanations, code, and source excerpts).
+    decoder = json.JSONDecoder()
+    for start_idx, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text, start_idx)
+        except json.JSONDecodeError as exc:
+            logger.debug(
+                "json_parser_candidate_rejected",
+                context=context,
+                position=exc.pos,
+                error=exc.msg,
+            )
+            continue
+        if isinstance(parsed, dict):
+            return parsed
 
     logger.error("json_parser_no_json_found", context=context, preview=text[:150])
     return None

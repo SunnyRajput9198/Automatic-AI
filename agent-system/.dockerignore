@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+.git
+.venv
+venv
+__pycache__
+*.py[cod]
+Frontend/node_modules
+Frontend/.next

@@ -32,7 +32,14 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       WORKSPACE_DIR: /app/workspace
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://aicredits.in/v1}
+      DEFAULT_OPENAI_MODEL: ${DEFAULT_OPENAI_MODEL:-gpt-5-mini}
       NEWSAPI_KEY: ${NEWSAPI_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      RESEARCH_MAX_ITERATIONS: ${RESEARCH_MAX_ITERATIONS:-2}
+      RESEARCH_MAX_TOOL_CALLS: ${RESEARCH_MAX_TOOL_CALLS:-8}
+      RESEARCH_MAX_SECONDS: ${RESEARCH_MAX_SECONDS:-180}
+      RESEARCH_MAX_REPEAT_STEPS: ${RESEARCH_MAX_REPEAT_STEPS:-1}
       COSTS_DIR: /app/costs
       SHARED_WORKSPACE: /app/workspace/shared
       ENABLE_SHELL: "false"
@@ -42,15 +49,16 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      qdrant:          
+      qdrant:
         condition: service_started
     volumes:
-      - ./workspace:/app/workspace      
-      - ./sandbox:/app/sandbox           
-      - ./traces:/app/traces      
+      - ./app:/app/app
+      - ./workspace:/app/workspace
+      - ./sandbox:/app/sandbox
+      - ./traces:/app/traces
       - ./costs:/app/costs
-      - ./evaluation_results:/app/evaluation_results   # ← add this       
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 
+      - ./evaluation_results:/app/evaluation_results
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 volumes:
   postgres_data:

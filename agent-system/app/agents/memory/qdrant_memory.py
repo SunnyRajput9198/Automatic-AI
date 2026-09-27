@@ -28,7 +28,7 @@ class QdrantMemory:
         if settings.OPENAI_API_KEY:
             self._oai = OpenAI(
                 api_key=settings.OPENAI_API_KEY,
-                base_url="https://aicredits.in/v1",
+                base_url=settings.OPENAI_BASE_URL,
             )
         else:
             logger.warning(

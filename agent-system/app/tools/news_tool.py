@@ -18,7 +18,7 @@ from typing import Dict, Any, List
 import httpx
 from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 
-from app.tools.base import Tool, ToolResult
+from app.tools.base import Tool, ToolResult, classify_tool_failure
 from app.core.config import settings
 
 logger = structlog.get_logger()
@@ -98,8 +98,14 @@ class NewsSearchTool(Tool):
                 fallback="duckduckgo",
             )
 
-        # DuckDuckGo fallback
-        return await self._ddg_search(query, num_results)
+        # DuckDuckGo fallback; preserve primary provider failure provenance.
+        fallback = await self._ddg_search(query, num_results)
+        if api_key:
+            fallback.metadata["provider_attempts"] = [{
+                "source": "NewsAPI", "status": "failed",
+                "failure_type": classify_tool_failure(result.error),
+            }]
+        return fallback
 
     # ------------------------------------------------------------------
     # NewsAPI source
@@ -113,11 +119,10 @@ class NewsSearchTool(Tool):
             "pageSize": num_results,
             "language": "en",
             "sortBy":   "publishedAt",
-            "apiKey":   api_key,
         }
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(_NEWSAPI_URL, params=params)
+                resp = await client.get(_NEWSAPI_URL, params=params, headers={"X-Api-Key": api_key})
 
             if resp.status_code == 401:
                 return ToolResult(
@@ -159,7 +164,8 @@ class NewsSearchTool(Tool):
             )
 
         except Exception as e:
-            return ToolResult(success=False, output="", error=str(e))
+            logger.warning("newsapi_request_failed", error_type=type(e).__name__)
+            return ToolResult(success=False, output="", error=f"NewsAPI request failed ({type(e).__name__})")
 
     @staticmethod
     def _format_newsapi(articles: List[dict]) -> List[str]:

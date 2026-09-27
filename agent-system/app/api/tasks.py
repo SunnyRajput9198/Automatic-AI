@@ -393,6 +393,50 @@ def health():
     return {"status": "ok", "service": "agent-system"}
 
 
+@router.get("/health/llm")
+async def health_llm():
+    """Verify end-to-end LLM connectivity through the application wrapper (AI Credits -> gpt-5-mini)."""
+    import time
+    from fastapi.responses import JSONResponse
+    from app.utils.llm import call_openai_with_system, classify_llm_exception, sanitize_error
+
+    t0 = time.time()
+    try:
+        response = await call_openai_with_system(
+            system_prompt="You are a health check system.",
+            user_prompt="Say OK",
+            temperature=0.0,
+            # GPT-5 uses part of the completion budget for reasoning; 20 tokens
+            # can exhaust the budget before producing even "OK".
+            max_tokens=200,
+        )
+        latency_ms = round((time.time() - t0) * 1000, 2)
+        return {
+            "status": "ok",
+            "provider": "ai_credits",
+            "model": settings.DEFAULT_OPENAI_MODEL,
+            "base_url": settings.OPENAI_BASE_URL,
+            "latency_ms": latency_ms,
+            "response": response.strip(),
+        }
+    except Exception as e:
+        latency_ms = round((time.time() - t0) * 1000, 2)
+        diag = classify_llm_exception(e)
+        sanitized = sanitize_error(str(e))
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "provider": "ai_credits",
+                "model": settings.DEFAULT_OPENAI_MODEL,
+                "base_url": settings.OPENAI_BASE_URL,
+                "latency_ms": latency_ms,
+                "error_category": diag["category"],
+                "error_message": sanitized,
+            },
+        )
+
+
 # ── Feedback ──────────────────────────────────────────────────────────────────
 
 @router.post("/feedback")

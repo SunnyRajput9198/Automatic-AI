@@ -56,6 +56,7 @@ class TaskCost:
 
     # ── LLM records ──────────────────────────────────────────────────────
     llm_calls:         List[LLMCall]
+    llm_call_diagnostics: List[Dict[str, Any]]
     total_llm_calls:   int
     reasoning_calls:   int
     planning_calls:    int
@@ -119,6 +120,7 @@ class CostTracker:
             started_at=time.time(),
             completed_at=None,
             llm_calls=[],
+            llm_call_diagnostics=[],
             total_llm_calls=0,
             reasoning_calls=0,
             planning_calls=0,
@@ -220,6 +222,12 @@ class CostTracker:
             tokens=tokens_est,
             duration_ms=round(duration_ms, 1),
         )
+
+    def record_llm_diagnostic(self, diagnostic: Dict[str, Any]) -> None:
+        """Persist sanitized per-attempt request/response metadata for review calls."""
+        if not self.current_task:
+            return
+        self.current_task.llm_call_diagnostics.append(dict(diagnostic))
 
     def record_tool_call(
         self,

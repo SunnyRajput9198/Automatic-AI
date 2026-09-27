@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import structlog
 from typing import List, Optional
@@ -54,10 +55,19 @@ class FileManager:
 
     def get_task_workspace(self, task_id: str) -> Path:
         """Get or create workspace for specific task"""
-        workspace = self.base_dir / task_id
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", task_id):
+            raise ValueError("Invalid task identifier")
+        base = self.base_dir.resolve()
+        workspace = base / task_id
+        if workspace.is_symlink():
+            raise ValueError("Task workspace cannot be a symlink")
         workspace.mkdir(
             parents=True, exist_ok=True
         )  # parent=True allows creation of intermediate directories if they don't exist, and exist_ok=True prevents an error if the directory already exists.
+        try:
+            workspace.resolve().relative_to(base)
+        except ValueError:
+            raise ValueError("Task workspace escapes the configured workspace") from None
         return workspace
 
     def get_shared_workspace(self) -> Path:
@@ -161,7 +171,19 @@ class FileManager:
 
     def cleanup_task_workspace(self, task_id: str) -> bool:
         """Remove all files from task-specific workspace"""
-        workspace = self.base_dir / task_id
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", task_id):
+            logger.error("file_manager_invalid_task_id")
+            return False
+        base = self.base_dir.resolve()
+        workspace = base / task_id
+        if workspace.is_symlink():
+            logger.error("file_manager_task_workspace_symlink")
+            return False
+        try:
+            workspace.resolve(strict=False).relative_to(base)
+        except ValueError:
+            logger.error("file_manager_task_workspace_outside_base")
+            return False
 
         if not workspace.exists():
             return True

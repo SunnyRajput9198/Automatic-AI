@@ -60,31 +60,30 @@ RESPOND ONLY WITH JSON."""
     def __init__(
         self, name: str = "engineer_001", model: str = "claude-haiku-4-5-20251001"
     ):
+        self._enabled_tools = [
+            "python_executor", "file_read", "file_write", "file_append",
+            "file_list", "file_delete",
+        ]
+        if settings.ENABLE_SHELL:
+            self._enabled_tools.append("shell_executor")
         super().__init__(
             name=name,
             role="engineer",
-            allowed_tools=[
-                "python_executor",
-                "file_read",
-                "file_write",
-                "file_append",
-                "file_list",
-                "file_delete",
-                "shell_executor",
-            ],
+            allowed_tools=self._enabled_tools,
         )
         self.model = model
 
         fm = FileManager(base_dir=settings.WORKSPACE_DIR)
         self._tools: Dict[str, Any] = {
             "python_executor": RestrictedPythonExecutor(),
-            "shell_executor":  ShellExecutor(),
             "file_read":       FileReadTool(fm),
             "file_write":      FileWriteTool(fm),
             "file_append":     FileAppendTool(fm),
             "file_list":       FileListTool(fm),
             "file_delete":     FileDeleteTool(fm),
         }
+        if settings.ENABLE_SHELL:
+            self._tools["shell_executor"] = ShellExecutor()
 
     async def execute(
         self, task: str, context: Optional[Dict[str, Any]] = None

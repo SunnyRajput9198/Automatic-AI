@@ -18,7 +18,8 @@ class FileReadTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Read the contents of a file from the shared workspace. Files persist between tasks."
+        return ("Read a named file from the shared persistent workspace and return its text. Required input: filename. "
+                "Use only when the user requests workspace content; do not use for internet data.")
     
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -73,7 +74,8 @@ class FileWriteTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Write content to a file in the shared workspace. File will persist for future tasks."
+        return ("Create or overwrite a text file in the shared persistent workspace. Required inputs: filename and content. "
+                "This has a persistent side effect; use only when the user asks to save/create a file.")
     
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -133,7 +135,7 @@ class FileListTool(Tool):
     
     @property
     def description(self) -> str:
-        return "List all files in the shared workspace that persist between tasks."
+        return "List top-level filenames in the shared workspace. No parameters. Use only for explicit workspace inspection requests."
     
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -172,7 +174,7 @@ class FileDeleteTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Delete a file from the shared workspace."
+        return "Delete one named file from the shared workspace. Required input: filename. Persistent destructive action; use only when explicitly requested."
     
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -225,7 +227,7 @@ class FileAppendTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Append content to an existing file. Creates file if it does not exist."
+        return "Append text to a named file in the shared workspace, creating it if missing. Required inputs: filename and content. Use only when explicitly requested."
     
     @property
     def input_schema(self) -> Dict[str, Any]:

@@ -1,10 +1,19 @@
 from RestrictedPython import compile_restricted, safe_builtins, utility_builtins
 from RestrictedPython.PrintCollector import PrintCollector
 from app.tools.base import Tool, ToolResult
+import importlib
 import structlog
 from typing import Dict, Any
 
 logger = structlog.get_logger()
+_SAFE_MODULES = frozenset({"math", "statistics"})
+
+
+def _restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
+    """Allow only pure computation modules inside the sandbox."""
+    if level or name not in _SAFE_MODULES:
+        raise ImportError("Only math and statistics imports are available")
+    return importlib.import_module(name)
 
 class RestrictedPythonExecutor(Tool):
     """
@@ -18,11 +27,11 @@ class RestrictedPythonExecutor(Tool):
 
     @property
     def name(self) -> str:
-        return "restricted_python_executor"
+        return "python_executor"
 
     @property
     def description(self) -> str:
-        return "Execute Python code safely using RestrictedPython sandbox."
+        return "Run actual Python calculations or data processing in an isolated RestrictedPython sandbox; returns captured stdout. Use for meaningful computation, not trivial arithmetic. Required input: executable code string. It cannot perform normal host file/network access."
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -47,7 +56,7 @@ class RestrictedPythonExecutor(Tool):
 
             # Safe globals
             safe_globals = {
-                "__builtins__": safe_builtins | utility_builtins,
+                "__builtins__": safe_builtins | utility_builtins | {"__import__": _restricted_import},
                 "_print_": PrintCollector,  # capture print output
                 "_getattr_": getattr,
                 "_setattr_": setattr,
@@ -59,8 +68,10 @@ class RestrictedPythonExecutor(Tool):
             safe_locals = {}
             exec(byte_code, safe_globals, safe_locals)
 
-            # Collect printed output
-            output = safe_locals["_print_"].read()
+            # RestrictedPython stores the print collector in `_print` within
+            # locals after executing generated print-hook calls.
+            print_collector = safe_locals.get("_print")
+            output = print_collector() if print_collector else ""
 
             logger.info("restricted_python_executor_success", output_length=len(output))
             return ToolResult(success=True, output=output, metadata={"sandbox": "RestrictedPython"})

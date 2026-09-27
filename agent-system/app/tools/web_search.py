@@ -566,10 +566,16 @@ class WebSearchTool(Tool):
                 item for r in results if isinstance(r, list) for item in r
             ]
 
+            # A query reformulation is useful when both primary search sources
+            # return nothing; it remains within the same public-web capability.
+            if not sources:
+                sources = await self._ddg_search(f"{query} recent information sources")
+
             if not sources:
                 return ToolResult(
                     success=False, output="", error="No results found",
-                    metadata={"query": query, "num_results": 0},
+                    metadata={"tool_name": self.name, "source": "Wikipedia + DuckDuckGo",
+                              "failure_type": "EMPTY_RESULT", "query": query, "num_results": 0},
                 )
 
             formatted = []
@@ -594,6 +600,7 @@ class WebSearchTool(Tool):
                 output="\n\n".join(formatted),
                 metadata={
                     "tool_name":   "web_search",
+                    "source":      source_names,
                     "query":       query,
                     "num_results": len(sources),
                     "sources":     source_names,
@@ -606,13 +613,38 @@ class WebSearchTool(Tool):
 
 
 # ---------------------------------------------------------------------------
-# WebFetchTool — unchanged
+# WebFetchTool — public HTTPS only, with redirect and DNS checks.
 # ---------------------------------------------------------------------------
+
+import ipaddress
+import socket
+from urllib.parse import urljoin, urlsplit
 
 class WebFetchTool(Tool):
     """Fetch text content from a URL (HTTPS only)."""
 
-    BLOCKED_DOMAINS = ["localhost", "127.0.0.1", "0.0.0.0", "internal", "private"]
+    MAX_REDIRECTS = 3
+
+    @staticmethod
+    async def _validate_public_url(url: str) -> str:
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Only public HTTPS URLs are allowed")
+        host = parsed.hostname.rstrip(".").lower()
+        if host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".private")):
+            raise ValueError("Access to internal domains is not allowed")
+        try:
+            address = ipaddress.ip_address(host)
+            addresses = [address]
+        except ValueError:
+            try:
+                records = await asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM)
+                addresses = [ipaddress.ip_address(record[4][0]) for record in records]
+            except (OSError, ValueError):
+                raise ValueError("Unable to validate destination host") from None
+        if not addresses or any(not address.is_global for address in addresses):
+            raise ValueError("Access to private or non-public network addresses is not allowed")
+        return url
 
     @property
     def name(self) -> str:
@@ -620,7 +652,8 @@ class WebFetchTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Fetch text content from a webpage (HTTPS only)"
+        return ("Fetch up to 50 KB of text from a known public HTTPS webpage. Required input: url. "
+                "Rejects local/private network destinations and unsafe redirects; use web_search when no URL is known.")
 
     @property
     def input_schema(self) -> Dict[str, Any]:
@@ -635,33 +668,40 @@ class WebFetchTool(Tool):
 
         if not url:
             return ToolResult(success=False, output="", error="URL is required")
-        if not url.startswith(("https://", "http://")):
-            return ToolResult(success=False, output="", error="URL must start with http:// or https://")
-        if any(b in url.lower() for b in self.BLOCKED_DOMAINS):
-            return ToolResult(success=False, output="", error="Access to internal domains not allowed")
-
-        logger.info("web_fetch_running", url=url)
-
         try:
+            await self._validate_public_url(url)
+            logger.info("web_fetch_running", host=urlsplit(url).hostname)
             async with httpx.AsyncClient(
-                timeout=15.0, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}
+                timeout=15.0, follow_redirects=False,
+                headers={"User-Agent": "Mozilla/5.0"},
             ) as client:
-                resp = await client.get(url)
+                current_url = url
+                for redirect_count in range(self.MAX_REDIRECTS + 1):
+                    await self._validate_public_url(current_url)
+                    resp = await client.get(current_url)
+                    if resp.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    location = resp.headers.get("location")
+                    if not location or redirect_count >= self.MAX_REDIRECTS:
+                        return ToolResult(success=False, output="", error="Too many or invalid redirects")
+                    current_url = urljoin(current_url, location)
                 if resp.status_code != 200:
                     return ToolResult(success=False, output="", error=f"HTTP {resp.status_code}")
 
                 content = resp.text[:50000]
-                logger.info("web_fetch_completed", url=url, size=len(content))
+                logger.info("web_fetch_completed", host=urlsplit(current_url).hostname, size=len(content))
                 return ToolResult(
                     success=True,
                     output=content,
                     metadata={
                         "tool_name":   "web_fetch",
-                        "url":         url,
+                        "url":         current_url,
                         "status_code": resp.status_code,
                         "size":        len(content),
                     },
                 )
+        except ValueError as e:
+            return ToolResult(success=False, output="", error=str(e))
         except Exception as e:
-            logger.error("web_fetch_error", error=str(e), url=url)
-            return ToolResult(success=False, output="", error=f"Fetch failed: {str(e)}")
+            logger.error("web_fetch_error", error_type=type(e).__name__)
+            return ToolResult(success=False, output="", error=f"Fetch failed ({type(e).__name__})")

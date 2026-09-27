@@ -25,8 +25,8 @@ class ShellExecutor(Tool):
     """
 
     ALLOWED_COMMANDS = {
-        "ls", "pwd", "cat", "grep", "find", "wc", "head", "tail",
-        "echo", "mkdir", "touch", "cp", "mv", "tree", "du", "df",
+        "ls", "pwd", "cat", "grep", "wc", "head", "tail",
+        "echo", "mkdir", "touch", "tree", "du", "df",
     }
 
     # Characters that enable command chaining / injection
@@ -60,8 +60,21 @@ class ShellExecutor(Tool):
         """Return False if command contains chaining/injection characters."""
         if any(char in command for char in self._DANGEROUS):
             return False
-        parts = shlex.split(command)
-        return bool(parts) and parts[0] in self.ALLOWED_COMMANDS
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False
+        if not parts or parts[0] not in self.ALLOWED_COMMANDS:
+            return False
+        # Keep every relative path inside the workspace. Remove commands with
+        # recursive/executable behavior (find/cp/mv) from the allowlist above.
+        for argument in parts[1:]:
+            path_parts = argument.replace("\\", "/").split("/")
+            if ".." in path_parts or argument.startswith(("/", "\\\\")):
+                return False
+            if (len(argument) >= 2 and argument[1] == ":") or argument.startswith("~"):
+                return False
+        return True
 
     async def run(self, **kwargs: Any) -> ToolResult:
         command: str = kwargs.get("command", "")
@@ -70,7 +83,11 @@ class ShellExecutor(Tool):
             return ToolResult(success=False, output="", error="No command provided")
 
         if not self._is_command_safe(command):
-            base_cmd = shlex.split(command)[0] if shlex.split(command) else ""
+            try:
+                parsed_command = shlex.split(command)
+            except ValueError:
+                parsed_command = []
+            base_cmd = parsed_command[0] if parsed_command else ""
             return ToolResult(
                 success=False,
                 output="",
@@ -80,7 +97,7 @@ class ShellExecutor(Tool):
                 ),
             )
 
-        logger.info("shell_executor_running", command=command)
+        logger.info("shell_executor_running", command_name=shlex.split(command)[0])
 
         shared_workspace: str = settings.SHARED_WORKSPACE
         os.makedirs(shared_workspace, exist_ok=True)
@@ -103,11 +120,11 @@ class ShellExecutor(Tool):
                     metadata={"return_code": 0},
                 )
             else:
-                logger.warning("shell_executor_failed", error=result.stderr)
+                logger.warning("shell_executor_failed", return_code=result.returncode)
                 return ToolResult(
                     success=False,
                     output=result.stdout,
-                    error=result.stderr,
+                    error=f"Command failed with exit code {result.returncode}",
                     metadata={"return_code": result.returncode},
                 )
 
@@ -120,9 +137,9 @@ class ShellExecutor(Tool):
             )
 
         except Exception as e:
-            logger.error("shell_executor_error", error=str(e))
+            logger.error("shell_executor_error", error_type=type(e).__name__)
             return ToolResult(
                 success=False,
                 output="",
-                error=f"Execution error: {str(e)}",
+                error=f"Execution error ({type(e).__name__})",
             )
